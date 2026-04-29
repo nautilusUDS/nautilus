@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"nautilus/internal/core/builtins"
 	"nautilus/internal/core/metrics"
+	"net"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // --- Internal Virtual Services ---
@@ -83,6 +85,43 @@ func Discovery(state map[string][]string) http.HandlerFunc {
 	}
 }
 
+func JSON(args ...string) http.HandlerFunc {
+	data := "{}"
+	if len(args) > 0 {
+		data = args[0]
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(data))
+	}
+}
+
+func Ping(targetService string, nodes []string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if len(nodes) == 0 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprintf(w, "{\"service\": \"%s\", \"status\": \"unreachable\", \"reason\": \"no nodes discovered\"}\n", targetService)
+			return
+		}
+
+		// layer 4 connectivity check
+		start := time.Now()
+		conn, err := net.DialTimeout("unix", nodes[0], 1*time.Second)
+		duration := time.Since(start)
+
+		if err != nil {
+			w.WriteHeader(http.StatusGatewayTimeout)
+			fmt.Fprintf(w, "{\"service\": \"%s\", \"status\": \"down\", \"node\": \"%s\", \"error\": \"%s\"}\n", targetService, nodes[0], err)
+			return
+		}
+		conn.Close()
+
+		fmt.Fprintf(w, "{\"service\": \"%s\", \"status\": \"up\", \"node\": \"%s\", \"latency_ms\": %d}\n", targetService, nodes[0], duration.Milliseconds())
+	}
+}
+
 // Registry maps virtual service names (with $) to their factories.
 var Registry = map[string]builtins.Factory{
 	"$echo":     Echo,
@@ -90,7 +129,9 @@ var Registry = map[string]builtins.Factory{
 	"$err":      ERR,
 	"$health":   OK,
 	"$metrics":  Metrics,
-	"$services": nil, // Placeholder for runtime resolution
+	"$services": nil, // Runtime resolution
+	"$json":     JSON,
+	"$ping":     nil, // Runtime resolution
 }
 
 // IsValid checks if a virtual service expression is valid.

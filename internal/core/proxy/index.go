@@ -7,6 +7,7 @@ import (
 	"nautilus/internal/core/builtins/virtualservices"
 	"nautilus/internal/core/forwarder"
 	"nautilus/internal/core/metrics"
+	"nautilus/internal/core/registry"
 	"nautilus/internal/rtree"
 	"net"
 	"net/http"
@@ -33,11 +34,11 @@ func (rs *responseState) Write(b []byte) (int, error) {
 }
 
 type Manager struct {
-	Tree      atomic.Pointer[rtree.RouteTree]
-	NodeLock  sync.RWMutex
-	Nodes     map[string][]string
-	Indices   map[string]*uint32
-	Registry  *registry.Registry
+	Tree     atomic.Pointer[rtree.RouteTree]
+	NodeLock sync.RWMutex
+	Nodes    map[string][]string
+	Indices  map[string]*uint32
+	Registry *registry.Registry
 
 	builtinCache sync.Map // map[string]http.HandlerFunc
 	virtualCache sync.Map // map[string]http.HandlerFunc
@@ -117,13 +118,23 @@ func (m *Manager) resolveVirtualService(expr string) http.HandlerFunc {
 		return virtualservices.Discovery(m.Registry.GetState())
 	}
 
-	if h, ok := m.virtualCache.Load(expr); ok {
-		return h.(http.HandlerFunc)
-	}
-
 	funcName, args, err := builtins.ParseDirective(expr)
 	if err != nil {
 		return nil
+	}
+
+	// Special case for $ping which needs access to registry and arguments
+	if funcName == "$ping" {
+		targetSvc := ""
+		if len(args) > 0 {
+			targetSvc = args[0]
+		}
+		nodes := m.Registry.GetNodes(targetSvc)
+		return virtualservices.Ping(targetSvc, nodes)
+	}
+
+	if h, ok := m.virtualCache.Load(expr); ok {
+		return h.(http.HandlerFunc)
 	}
 
 	if factory, ok := virtualservices.Registry[funcName]; ok {
