@@ -18,17 +18,26 @@ impl Config {
         let service_name = env::var("NAUTILUS_SERVICE_NAME")
             .or_else(|_| env::var("NAUTILUS_SERVICE_ID"))
             .map_err(|_| {
-                tracing::error!(var = "NAUTILUS_SERVICE_NAME", "missing required environment variable");
+                tracing::error!(
+                    var = "NAUTILUS_SERVICE_NAME",
+                    "missing required environment variable"
+                );
                 anyhow::anyhow!("NAUTILUS_SERVICE_NAME is required")
             })?;
 
         let target_addr = env::var("NAUTILUS_TARGET_ADDR").map_err(|_| {
-            tracing::error!(var = "NAUTILUS_TARGET_ADDR", "missing required environment variable");
+            tracing::error!(
+                var = "NAUTILUS_TARGET_ADDR",
+                "missing required environment variable"
+            );
             anyhow::anyhow!("NAUTILUS_TARGET_ADDR is required")
         })?;
 
         let socket_name = env::var("NAUTILUS_SOCKET_NAME").map_err(|_| {
-            tracing::error!(var = "NAUTILUS_SOCKET_NAME", "missing required environment variable");
+            tracing::error!(
+                var = "NAUTILUS_SOCKET_NAME",
+                "missing required environment variable"
+            );
             anyhow::anyhow!("NAUTILUS_SOCKET_NAME is required")
         })?;
 
@@ -66,6 +75,7 @@ impl Config {
             .join(&self.socket_name)
     }
 
+    #[cfg(unix)]
     pub fn service_dir(&self) -> PathBuf {
         self.base_dir.join(&self.service_name)
     }

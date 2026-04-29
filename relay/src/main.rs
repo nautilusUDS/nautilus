@@ -2,7 +2,6 @@ mod config;
 mod relay;
 
 use anyhow::Result;
-use tracing_subscriber;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -24,7 +23,7 @@ async fn main() -> Result<()> {
         tracing::error!(error = ?e, path = ?cfg.base_dir, "failed to create base directory");
         return Err(e.into());
     }
-    
+
     let r = relay::Relay::new(cfg);
     if let Err(e) = r.run().await {
         tracing::error!(error = ?e, "runtime fatal error");

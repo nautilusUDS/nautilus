@@ -1,11 +1,11 @@
 use crate::config::Config;
-use anyhow::Result;
-use std::sync::Arc;
-use std::time::Duration;
-#[cfg(unix)]
-use std::fs;
 #[cfg(unix)]
 use anyhow::Context;
+use anyhow::Result;
+#[cfg(unix)]
+use std::fs;
+use std::sync::Arc;
+use std::time::Duration;
 #[cfg(unix)]
 use tokio::io::copy_bidirectional;
 use tokio::net::TcpStream;
@@ -13,7 +13,9 @@ use tokio::net::TcpStream;
 use tokio::net::UnixListener;
 use tokio::sync::{watch, Semaphore};
 use tokio::time::interval;
-use tracing::{debug, error, info, warn};
+#[cfg(unix)]
+use tracing::error;
+use tracing::{debug, info, warn};
 
 pub struct Relay {
     cfg: Arc<Config>,
@@ -23,7 +25,7 @@ pub struct Relay {
 impl Relay {
     pub fn new(cfg: Config) -> Self {
         let max_conn = cfg.max_connections;
-        Self { 
+        Self {
             cfg: Arc::new(cfg),
             pool: Arc::new(Semaphore::new(max_conn)),
         }
@@ -97,9 +99,9 @@ impl Relay {
 
 #[cfg(unix)]
 async fn run_uds_listener(
-    cfg: Arc<Config>, 
+    cfg: Arc<Config>,
     pool: Arc<Semaphore>,
-    mut stop_rx: watch::Receiver<()>
+    mut stop_rx: watch::Receiver<()>,
 ) -> Result<()> {
     let socket_path = cfg.socket_path();
     let service_dir = cfg.service_dir();
@@ -138,7 +140,9 @@ async fn run_uds_listener(
             let _ = fs::remove_file(&self.path);
         }
     }
-    let _cleanup = CleanupOnDrop { path: socket_path.clone() };
+    let _cleanup = CleanupOnDrop {
+        path: socket_path.clone(),
+    };
 
     loop {
         tokio::select! {
@@ -147,7 +151,7 @@ async fn run_uds_listener(
                     Ok((mut uds_stream, addr)) => {
                         let pool = pool.clone();
                         let target_addr = cfg.target_addr.clone();
-                        
+
                         // Acquire permit from connection pool
                         // If pool is full, this will wait (queue) until a spot opens
                         let permit = match pool.clone().acquire_owned().await {
@@ -159,15 +163,15 @@ async fn run_uds_listener(
                         };
 
                         debug!(
-                            client = ?addr, 
+                            client = ?addr,
                             active_conns = cfg.max_connections - pool.available_permits(),
                             "connection accepted"
                         );
 
                         tokio::spawn(async move {
                             // Move permit into spawn to keep it alive for the duration of the connection
-                            let _permit = permit; 
-                            
+                            let _permit = permit;
+
                             match TcpStream::connect(&target_addr).await {
                                 Ok(mut tcp_stream) => {
                                     debug!(target = %target_addr, "relaying stream");
