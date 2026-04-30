@@ -1,11 +1,13 @@
 package virtualservices
 
 import (
+	"encoding/json"
 	"fmt"
 	"nautilus/internal/core/builtins"
 	"nautilus/internal/core/metrics"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -13,21 +15,24 @@ import (
 // --- Internal Virtual Services ---
 
 func Echo(args ...string) http.HandlerFunc {
-	msg := "Nautilus Echo"
-	if len(args) > 0 && args[0] != "" {
-		msg = args[0]
-	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		fmt.Fprintf(w, "%s\n", msg)
-		fmt.Fprintf(w, "Method: %s\n", r.Method)
-		fmt.Fprintf(w, "Path: %s\n", r.URL.Path)
-		fmt.Fprintf(w, "Host: %s\n", r.Host)
-		fmt.Fprintf(w, "RemoteAddr: %s\n", r.RemoteAddr)
-		fmt.Fprintf(w, "---\nHeaders:\n")
+		w.Header().Set("Content-Type", "application/json")
+		
+		headers := make(map[string]string)
 		for k, v := range r.Header {
-			fmt.Fprintf(w, "%s: %v\n", k, v)
+			headers[k] = strings.Join(v, ", ")
 		}
+
+		data := map[string]interface{}{
+			"method":      r.Method,
+			"path":        r.URL.Path,
+			"host":        r.Host,
+			"remote_addr": r.RemoteAddr,
+			"headers":     headers,
+		}
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(data)
 	}
 }
 
@@ -43,12 +48,24 @@ func OK(args ...string) http.HandlerFunc {
 }
 
 func ERR(args ...string) http.HandlerFunc {
+	code := http.StatusBadRequest
 	msg := "ERR"
+
 	if len(args) > 0 && args[0] != "" {
-		msg = args[0]
+		if c, err := strconv.Atoi(args[0]); err == nil {
+			code = c
+			if len(args) > 1 {
+				msg = args[1]
+			} else {
+				msg = http.StatusText(code)
+			}
+		} else {
+			msg = args[0]
+		}
 	}
+
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
+		w.WriteHeader(code)
 		w.Write([]byte(msg))
 	}
 }
