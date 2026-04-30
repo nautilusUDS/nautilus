@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 )
 
 type NodesChangedCallback func(serviceName string, nodes []string)
@@ -19,6 +20,9 @@ type Registry struct {
 	mu       sync.RWMutex
 	services map[string]*ServiceNodes
 	baseDir  string
+
+	unhealthy   map[string]time.Time
+	unhealthyMu sync.RWMutex
 
 	subMu       sync.RWMutex
 	subscribers []NodesChangedCallback
@@ -59,7 +63,7 @@ func (r *Registry) GetNodes(serviceName string) []string {
 func (r *Registry) GetState() map[string][]string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	
+
 	state := make(map[string][]string)
 	for name, sn := range r.services {
 		state[name] = slices.Clone(sn.nodes)
@@ -161,4 +165,45 @@ func (r *Registry) Subscribe(callback NodesChangedCallback) {
 	r.subMu.Lock()
 	defer r.subMu.Unlock()
 	r.subscribers = append(r.subscribers, callback)
+}
+
+func (r *Registry) OnFailure(serviceName, failedNodePath string, shouldDeleteFile bool) {
+	//nodes that don't require file deletion are temporarily kept in the registry.
+	if !shouldDeleteFile {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	sn, ok := r.services[serviceName]
+	if !ok {
+		return
+	}
+
+	if shouldDeleteFile {
+		os.Remove(failedNodePath)
+	}
+
+	for i, node := range sn.nodes {
+		if node == failedNodePath {
+			sn.nodes = slices.Delete(sn.nodes, i, i+1)
+			break
+		}
+	}
+
+	updatedNodes := slices.Clone(sn.nodes)
+
+	if len(sn.nodes) == 0 {
+		delete(r.services, serviceName)
+	} else {
+		updatedNodes = nil
+	}
+
+	r.subMu.RLock()
+	subs := slices.Clone(r.subscribers)
+	r.subMu.RUnlock()
+	for _, sub := range subs {
+		sub(serviceName, updatedNodes)
+	}
+
 }

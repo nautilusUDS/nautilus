@@ -2,6 +2,7 @@ package forwarder
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -9,15 +10,18 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"sync"
+	"syscall"
 	"time"
 )
 
+type onFailureFunc = func(serviceName, failedNodePath string, shouldDeleteFile bool)
+
 type Forwarder struct {
 	transports sync.Map // map[string]*http.Transport
-	onFailure  func(serviceName, nodePath string)
+	onFailure  onFailureFunc
 }
 
-func NewForwarder(onFailure func(serviceName, nodePath string)) *Forwarder {
+func NewForwarder(onFailure onFailureFunc) *Forwarder {
 	return &Forwarder{
 		onFailure: onFailure,
 	}
@@ -53,7 +57,17 @@ func (f *Forwarder) ForwardMiddleware(w http.ResponseWriter, r *http.Request, mw
 
 	resp, err := client.Do(mwReq)
 	if err != nil {
-		log.Printf("Middleware UDS error: %v", err)
+		shouldDelete := false
+		var opErr *net.OpError
+		if errors.As(err, &opErr) && errors.Is(opErr.Err, syscall.ECONNREFUSED) {
+			shouldDelete = true
+		}
+
+		if f.onFailure != nil {
+			f.onFailure("middleware", nodePath, shouldDelete)
+			f.transports.Delete(nodePath)
+		}
+
 		http.Error(w, "Middleware Service Unavailable", http.StatusServiceUnavailable)
 		return false
 	}
@@ -95,9 +109,20 @@ func (f *Forwarder) Forward(w http.ResponseWriter, r *http.Request, serviceName,
 
 	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		log.Printf("forwarding error: service=%s node=%s err=%v", serviceName, nodePath, err)
-		if f.onFailure != nil {
-			f.onFailure(serviceName, nodePath)
+		shouldDelete := false
+		var opErr *net.OpError
+
+		if errors.As(err, &opErr) {
+			if errors.Is(opErr.Err, syscall.ECONNREFUSED) {
+				shouldDelete = true
+			}
 		}
+
+		if f.onFailure != nil {
+			f.onFailure(serviceName, nodePath, shouldDelete)
+			f.transports.Delete(nodePath)
+		}
+
 		http.Error(w, "Node Failure", http.StatusBadGateway)
 	}
 

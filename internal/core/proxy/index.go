@@ -50,7 +50,7 @@ func NewManager(reg *registry.Registry) *Manager {
 		Nodes:     make(map[string][]string),
 		Indices:   make(map[string]*uint32),
 		Registry:  reg,
-		Forwarder: forwarder.NewForwarder(nil),
+		Forwarder: forwarder.NewForwarder(reg.OnFailure),
 	}
 	m.Tree.Store(&rtree.RouteTree{})
 	return m
