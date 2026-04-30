@@ -8,6 +8,10 @@
 # Testing: Virtual services, dynamic response generation, and diagnostic headers.
 # ------------------------------------------------------------------------------
 
+# Diagnostic Route for Integration Tests
+GET */debug/health $ok("Infrastructure-OK")
+    $SetHeader("X-Nautilus-Mode", "Diagnostic")
+
 # Health and Monitoring
 # Path Example: localhost/sys/health or 127.0.0.1/sys/stats
 GET [localhost|127.0.0.1]/sys/[health|stats|metrics|status] $ok("System-Active")
@@ -80,7 +84,7 @@ GET [localhost|127.0.0.1]/assets/[lib|css|media]/[core|app|vendor][.js|.css|.svg
 
 # Block Sensitive Patterns
 # Immediately terminate requests to sensitive files
-* [localhost|127.0.0.1]/[.env|.git|config.json|id_rsa|passwd] $err("Forbidden-Resource")
+* [localhost|127.0.0.1]/[.env|.git|config.json|id_rsa|passwd] $err("Access Denied")
     $Log("SECURITY_VIOLATION")
 
 # Anti-Scanning Honeytoken

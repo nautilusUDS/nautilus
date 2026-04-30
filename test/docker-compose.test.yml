@@ -5,7 +5,8 @@ services:
       - proxy_volume:/var/run/nautilus
       - ./Caddyfile.backend:/etc/caddy/Caddyfile
     user: "1000:1000"
-    command: caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+    # Ensure the service directory exists before Caddy tries to bind the socket
+    command: sh -c "mkdir -p /var/run/nautilus/services/backend && caddy run --config /etc/caddy/Caddyfile --adapter caddyfile"
 
   nautilus:
     build:
@@ -30,7 +31,8 @@ services:
       - "8080:80"
     volumes:
       - proxy_volume:/var/run/nautilus
-    command: caddy reverse-proxy --from :80 --to unix//var/run/nautilus/nautilus-0.sock --to unix//var/run/nautilus/nautilus-1.sock --to unix//var/run/nautilus/nautilus-2.sock
+      - ./Caddyfile.frontend:/etc/caddy/Caddyfile
+    command: caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
     depends_on:
       nautilus:
         condition: service_started
