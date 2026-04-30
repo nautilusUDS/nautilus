@@ -41,14 +41,17 @@ func main() {
 		log.Fatalf("Invalid entrypoint count: %v", err)
 	}
 
-	if err := os.MkdirAll(entrypointDir, 0755); err != nil {
+	if err := os.MkdirAll(entrypointDir, 0777); err != nil {
 		log.Fatalf("Failed to create entrypoint directory: %v", err)
 	}
+	// Ensure permissions if directory already existed
+	os.Chmod(entrypointDir, 0777)
 
 	// Create services directory if it doesn't exist
-	if err := os.MkdirAll(servicesDir, 0755); err != nil {
+	if err := os.MkdirAll(servicesDir, 0777); err != nil {
 		log.Fatalf("Failed to create services directory: %v", err)
 	}
+	os.Chmod(servicesDir, 0777)
 
 	lc := lifecycle.New()
 	
