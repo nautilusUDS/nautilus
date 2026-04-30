@@ -6,6 +6,7 @@ import (
 	"nautilus/internal/core/builtins"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -125,8 +126,16 @@ func Redirect(args ...string) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {}
 	}
 	code, _ := strconv.Atoi(args[0])
+	_, err := url.Parse(args[1])
+	if err != nil {
+		return func(w http.ResponseWriter, r *http.Request) {}
+	}
 	target := args[1]
 	return func(w http.ResponseWriter, r *http.Request) {
+		newURL, _ := url.Parse(target)
+		newURL.RawQuery = r.URL.RawQuery
+		target = newURL.String()
+
 		http.Redirect(w, r, target, code)
 	}
 }
