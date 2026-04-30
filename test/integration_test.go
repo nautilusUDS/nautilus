@@ -48,7 +48,7 @@ func TestIntegration_Nautilus(t *testing.T) {
 		assert.Equal(t, "NautilusRocks", headers["X-Test-Echo"])
 	})
 
-	t.Run("API Routing to Nginx - Requires Auth", func(t *testing.T) {
+	t.Run("API Routing to Caddy - Requires Auth", func(t *testing.T) {
 		// 1. Without Auth -> 401
 		req, _ := http.NewRequest("GET", baseURL+"/api/v1/user/profile", nil)
 		resp, err := client.Do(req)
@@ -56,16 +56,16 @@ func TestIntegration_Nautilus(t *testing.T) {
 		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 		resp.Body.Close()
 
-		// 2. With Auth -> 200 (Nginx welcome page)
+		// 2. With Auth -> 200 (Caddy welcome page)
 		req, _ = http.NewRequest("GET", baseURL+"/api/v1/user/profile", nil)
-		req.SetBasicAuth("admin", "test-pass")
+		req.SetBasicAuth("developer", "dev-secret") // Updated to match Ntlfile
 		resp, err = client.Do(req)
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 		body, _ := io.ReadAll(resp.Body)
-		assert.Contains(t, string(body), "Welcome to nginx!")
+		assert.Contains(t, string(body), "Welcome to Caddy Native UDS!")
 	})
 
 	t.Run("Failure Simulation - Virtual Service $err", func(t *testing.T) {
@@ -78,7 +78,7 @@ func TestIntegration_Nautilus(t *testing.T) {
 	})
 
 	t.Run("Trailing Slash Test", func(t *testing.T) {
-		// Test both with and without slash as per Ntlfile: GET [localhost|127.0.0.1]/v1/data[/|] nginx
+		// Test both with and without slash as per Ntlfile: GET [localhost|127.0.0.1]/v1/data[/|] backend
 		paths := []string{"/v1/data", "/v1/data/"}
 		for _, p := range paths {
 			req, _ := http.NewRequest("GET", baseURL+p, nil)
@@ -102,7 +102,7 @@ func TestIntegration_Nautilus(t *testing.T) {
 	})
 
 	t.Run("Rate Limit Test", func(t *testing.T) {
-		// [localhost|127.0.0.1]/internal/[v1|v2]/[auth|billing|search]/[verify|execute|query]/[token|id|uuid] nginx
+		// [localhost|127.0.0.1]/internal/[v1|v2]/[auth|billing|search]/[verify|execute|query]/[token|id|uuid] backend
 		// $RateLimit(100, "1s")
 		// We'll just do one request to ensure it works, full rate limit test might be flaky in CI
 		req, _ := http.NewRequest("GET", baseURL+"/internal/v1/auth/verify/token", nil)

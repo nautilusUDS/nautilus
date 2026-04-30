@@ -15,7 +15,7 @@ Nautilus 是一個次世代路由架構，旨在透過 Unix Domain Sockets (UDS)
 
 *   Nautilus Core (Go)：數據面轉發引擎，具備原子化熱更新與 Round-robin 負載平衡功能。
 *   ntlc (Go)：路由編譯器，將 DSL 規則轉換為高性能二進位快照。
-*   Relay Sidecar (Rust)：基於非同步架構的適配器，負責將 UDS 流量轉譯至現有的 TCP 服務，並具備主動健康檢查機制。
+*   **ntl-tentacle (Rust)**：基於非同步架構的適配器，負責將 UDS 流量轉譯至現有的 TCP 服務，並具備主動健康檢查機制。
 
 ## 快速開始
 

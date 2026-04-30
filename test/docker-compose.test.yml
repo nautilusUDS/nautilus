@@ -1,23 +1,11 @@
 services:
-  nginx:
-    image: nginx:latest
-
-  relay:
-    build:
-      context: ../relay
-      dockerfile: ../test/Dockerfile.relay-dev
-    network_mode: "service:nginx"
+  backend:
+    image: caddy:latest
     volumes:
-      - ../relay:/app
       - proxy_volume:/var/run/nautilus
-    environment:
-      NAUTILUS_SERVICE_NAME: nginx
-      NAUTILUS_TARGET_ADDR: localhost:80
-      NAUTILUS_SOCKET_NAME: node-1.sock
-      NAUTILUS_SERVICES_DIR: /var/run/nautilus/services
-    depends_on:
-      nginx:
-        condition: service_started
+      - ./Caddyfile.backend:/etc/caddy/Caddyfile
+    user: "1000:1000"
+    command: caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
 
   nautilus:
     build:
@@ -33,7 +21,7 @@ services:
       NAUTILUS_ENTRYPOINT_COUNT: 3
       NAUTILUS_SERVICES_DIR: /var/run/nautilus/services
     depends_on:
-      relay:
+      backend:
         condition: service_started
 
   caddy:

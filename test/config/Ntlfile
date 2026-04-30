@@ -28,7 +28,7 @@ GET [localhost|127.0.0.1]/sys/[health|stats|metrics|status] $ok("System-Active")
 
 # Main API Gateway
 # Path Example: localhost/api/v2/billing/invoice
-* [localhost|127.0.0.1]/api/[v1|v2|v3]/[auth|billing]/[create|query|cancel] nginx
+* [localhost|127.0.0.1]/api/[v1|v2|v3]/[auth|billing]/[create|query|cancel] backend
     $BasicAuth("developer", "dev-secret")
     $PathTrimPrefix("/api")
     $RateLimit(50, "10s")
@@ -41,7 +41,7 @@ GET [localhost|127.0.0.1]/sys/[health|stats|metrics|status] $ok("System-Active")
 
 # Complex Host/Path Nesting
 # Matches: prod.api.io/v1/data, stage.api.io/v1/data, etc.
-GET [[prod|stage].|]api.io/v1/data[/|] nginx
+GET [[prod|stage].|]api.io/v1/data[/|] backend
     $SetHeader("X-Env-Type", "Hybrid")
     $Log("NESTED_TEST")
 
@@ -69,7 +69,7 @@ POST [localhost|127.0.0.1]/admin/[cluster|node]/[reload|drain|verify] $ok("Comma
 
 # Static Asset Pipeline
 # Matches: 127.0.0.1/assets/lib/core.js, etc.
-GET [localhost|127.0.0.1]/assets/[lib|css|media]/[core|app|vendor][.js|.css|.svg] nginx
+GET [localhost|127.0.0.1]/assets/[lib|css|media]/[core|app|vendor][.js|.css|.svg] backend
     $SetHeader("Cache-Control", "max-age=86400, immutable")
     $SetHeader("Access-Control-Allow-Origin", "*")
 
@@ -93,7 +93,7 @@ GET [localhost|127.0.0.1]/assets/[lib|css|media]/[core|app|vendor][.js|.css|.svg
 # ------------------------------------------------------------------------------
 
 # Legacy API Bridge
-[localhost|127.0.0.1]/old-api/v0 nginx
+[localhost|127.0.0.1]/old-api/v0 backend
     $RewritePath("/old-api/v0", "/api/v1")
     $SetHeader("X-Legacy-Mode", "transformed")
     $Log("LEGACY_BRIDGE")

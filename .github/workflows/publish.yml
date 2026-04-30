@@ -49,15 +49,6 @@ jobs:
             type=semver,pattern={{version}}
             type=raw,value=latest
 
-      - name: Extract Metadata (Relay)
-        id: meta-relay
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/nautilus-relay
-          tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=latest
-
       - name: Build and Push Nautilus
         uses: docker/build-push-action@v5
         with:
@@ -66,12 +57,3 @@ jobs:
           push: true
           tags: ${{ steps.meta-nautilus.outputs.tags }}
           labels: ${{ steps.meta-nautilus.outputs.labels }}
-
-      - name: Build and Push Relay
-        uses: docker/build-push-action@v5
-        with:
-          context: ./relay
-          file: ./relay/docker/Dockerfile
-          push: true
-          tags: ${{ steps.meta-relay.outputs.tags }}
-          labels: ${{ steps.meta-relay.outputs.labels }}

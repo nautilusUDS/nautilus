@@ -5,7 +5,7 @@ This guide explains how to set up the Nautilus development environment and run i
 ## 1. Prerequisites
 
 - **Go**: 1.25 or higher.
-- **Rust**: 1.80 or higher (for Relay sidecar).
+- **Rust**: 1.80 or higher (for ntl-tentacle sidecar).
 - **Docker & Docker Compose**: For integration testing.
 
 ## 2. Local Development
@@ -20,9 +20,9 @@ go build -o ntlc cmd/ntlc/main.go
 go run cmd/nautilus-core/main.go --config Ntlfile
 ```
 
-### Building Relay
+### Building ntl-tentacle
 ```bash
-cd relay
+cd ntl-tentacle
 cargo build --release
 ```
 
@@ -51,7 +51,7 @@ bash ./test/run_tests.sh
 - `internal/compiler/`: Ntlfile parsing and expansion logic.
 - `internal/rtree/`: Performance-optimized Radix Tree implementation.
 - `internal/core/`: Ingress handling, middleware execution, and forwarding.
-- `relay/`: Rust implementation of the UDS-to-TCP translator.
+- `ntl-tentacle/`: Rust implementation of the UDS-to-TCP translator.
 - `test/`: Integration tests and Docker configurations.
 
 ## 5. Coding Standards

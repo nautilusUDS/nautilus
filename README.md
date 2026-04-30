@@ -15,7 +15,7 @@ Nautilus is a next-generation routing fabric designed to replace the traditional
 
 *   Nautilus Core (Go): The data plane forwarding engine with atomic hot-reload and round-robin load balancing.
 *   ntlc (Go): The routing compiler that transforms DSL into high-performance binary snapshots.
-*   Relay Sidecar (Rust): An async adapter that bridges UDS traffic to legacy TCP services with built-in health probing.
+*   **ntl-tentacle (Rust)**: An async adapter that bridges UDS traffic to legacy TCP services with built-in health probing.
 
 ## Quick Start
 

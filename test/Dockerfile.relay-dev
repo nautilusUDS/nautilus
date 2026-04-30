@@ -1,9 +1,0 @@
-FROM rust:1.80-alpine
-
-RUN apk add --no-cache musl-dev gcc
-
-WORKDIR /app
-
-# The source will be mounted to /app
-# We use cargo run to compile and execute in one go
-ENTRYPOINT ["cargo", "run", "--release"]

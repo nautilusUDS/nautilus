@@ -26,7 +26,7 @@ The data plane responsible for forwarding traffic.
 - **Hybrid Watcher**: Combines `fsnotify` events with high-frequency scanning to ensure nodes are discovered immediately while remaining efficient during idle periods.
 - **Round-Robin Load Balancing**: Balances traffic across discovered UDS nodes for each service.
 
-### Relay Sidecar (Rust)
+### ntl-tentacle Sidecar (Rust)
 A high-performance adapter for legacy TCP services.
 - **Bidirectional Copy**: Uses `tokio::io::copy_bidirectional` for zero-copy-like performance.
 - **Health Probing**: Only binds the UDS interface if the upstream TCP service is responsive.
@@ -39,4 +39,4 @@ A high-performance adapter for legacy TCP services.
 3. **Middleware**: Executes a chain of built-in (e.g., `$Log`, `$BasicAuth`) or external UDS middlewares.
 4. **Load Balance**: Selects a healthy node path from the Registry.
 5. **Forwarding**: The `Forwarder` streams the request to the target UDS path.
-6. **Relay (Optional)**: If the target is a Relay, it translates the UDS stream back to a local TCP connection.
+6. **ntl-tentacle (Optional)**: If the target is a ntl-tentacle, it translates the UDS stream back to a local TCP connection.

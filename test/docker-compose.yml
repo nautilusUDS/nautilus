@@ -2,7 +2,7 @@ services:
   nginx:
     image: nginx:latest
 
-  relay:
+  ntl-tentacle:
     image: lucap9056/nautilus-relay:1.0.0
     network_mode: "service:nginx"
     volumes:
