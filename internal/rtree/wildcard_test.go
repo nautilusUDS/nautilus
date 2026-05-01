@@ -26,7 +26,9 @@ func TestFullWildcardHost(t *testing.T) {
 
 	assert.True(t, exists, "Expected match for full wildcard host '*'")
 	if exists {
-		assert.Equal(t, "all-hosts-service", tree.ServicePool[node.ServiceID])
+		serviceIndex := tree.ActionMetadata[node.ActionIndex]
+		serviceID := tree.ActionMetadata[serviceIndex]
+		assert.Equal(t, "all-hosts-service", tree.ActionsRegistry[serviceID])
 	}
 
 	url2 := "other.io/api/test"
@@ -35,6 +37,8 @@ func TestFullWildcardHost(t *testing.T) {
 
 	assert.True(t, exists2, "Expected match for full wildcard host '*' on another domain")
 	if exists2 {
-		assert.Equal(t, "all-hosts-service", tree.ServicePool[node2.ServiceID])
+		serviceIndex := tree.ActionMetadata[node2.ActionIndex]
+		serviceID := tree.ActionMetadata[serviceIndex]
+		assert.Equal(t, "all-hosts-service", tree.ActionsRegistry[serviceID])
 	}
 }
