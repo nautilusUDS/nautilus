@@ -17,7 +17,7 @@ import (
 func Echo(args ...string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		
+
 		headers := make(map[string]string)
 		for k, v := range r.Header {
 			headers[k] = strings.Join(v, ", ")
@@ -74,6 +74,19 @@ func Metrics(args ...string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		metrics.Global.WritePrometheus(w)
+	}
+}
+
+// --- Redirect ---
+
+func Redirect(args ...string) http.HandlerFunc {
+	if len(args) < 2 {
+		return func(w http.ResponseWriter, r *http.Request) {}
+	}
+	code, _ := strconv.Atoi(args[0])
+	target := args[1]
+	return func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target, code)
 	}
 }
 
@@ -146,6 +159,7 @@ var Registry = map[string]builtins.Factory{
 	"$err":      ERR,
 	"$health":   OK,
 	"$metrics":  Metrics,
+	"$redirect": Redirect,
 	"$services": nil, // Runtime resolution
 	"$json":     JSON,
 	"$ping":     nil, // Runtime resolution

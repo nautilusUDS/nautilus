@@ -41,6 +41,16 @@ func SetHost(args ...string) http.HandlerFunc {
 func PathTrimPrefix(args ...string) http.HandlerFunc {
 	prefix, _ := parseTwoArgs(args)
 	return func(w http.ResponseWriter, r *http.Request) {
+
+		if after, ok := strings.CutPrefix(r.URL.Path, prefix); ok {
+			r.URL.Path = after
+
+			if r.URL.RawPath != "" {
+				r.URL.RawPath = strings.TrimPrefix(r.URL.RawPath, url.PathEscape(prefix))
+			}
+			r.RequestURI = r.URL.RequestURI()
+		}
+
 		r.URL.Path = strings.TrimPrefix(r.URL.Path, prefix)
 		if r.URL.RawPath != "" {
 			r.URL.RawPath = strings.TrimPrefix(r.URL.RawPath, prefix)
@@ -52,6 +62,11 @@ func RewritePath(args ...string) http.HandlerFunc {
 	old, new := parseTwoArgs(args)
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.URL.Path = strings.ReplaceAll(r.URL.Path, old, new)
+
+		if r.URL.RawPath != "" {
+			r.URL.RawPath = strings.ReplaceAll(r.URL.RawPath, old, new)
+		}
+		r.RequestURI = r.URL.RequestURI()
 	}
 }
 
@@ -61,6 +76,7 @@ func SetQuery(args ...string) http.HandlerFunc {
 		q := r.URL.Query()
 		q.Set(key, val)
 		r.URL.RawQuery = q.Encode()
+		r.RequestURI = r.URL.RequestURI()
 	}
 }
 
@@ -119,27 +135,6 @@ func Log(args ...string) http.HandlerFunc {
 	}
 }
 
-// --- Redirect ---
-
-func Redirect(args ...string) http.HandlerFunc {
-	if len(args) < 2 {
-		return func(w http.ResponseWriter, r *http.Request) {}
-	}
-	code, _ := strconv.Atoi(args[0])
-	_, err := url.Parse(args[1])
-	if err != nil {
-		return func(w http.ResponseWriter, r *http.Request) {}
-	}
-	target := args[1]
-	return func(w http.ResponseWriter, r *http.Request) {
-		newURL, _ := url.Parse(target)
-		newURL.RawQuery = r.URL.RawQuery
-		target = newURL.String()
-
-		http.Redirect(w, r, target, code)
-	}
-}
-
 // --- RateLimit ---
 
 // --- Rate Limiting ---
@@ -193,7 +188,6 @@ var Registry = map[string]builtins.Factory{
 	"$IPAllow":        IPAllow,
 	"$MaxBodySize":    MaxBodySize,
 	"$Log":            Log,
-	"$Redirect":       Redirect,
 	"$RateLimit":      RateLimit,
 }
 
