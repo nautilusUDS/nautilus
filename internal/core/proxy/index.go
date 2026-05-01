@@ -8,6 +8,7 @@ import (
 	"nautilus/internal/core/forwarder"
 	"nautilus/internal/core/metrics"
 	"nautilus/internal/core/registry"
+	"nautilus/internal/interpolate"
 	"nautilus/internal/rtree"
 	"net"
 	"net/http"
@@ -159,14 +160,12 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. Route Lookup
-	urlPath := host + r.URL.Path
-	node, exists := tree.Search(rtree.ReverseHost(urlPath))
+	lookupPath := host + r.URL.Path
+	node, exists := tree.Search(rtree.ReverseHost(lookupPath))
 	if !exists {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
-
-	serviceName := tree.ServicePool[node.ServiceID]
 
 	// 2. Method Validation
 	methodBit := rtree.HTTPMethodMap[r.Method]
@@ -179,60 +178,96 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Wrap ResponseWriter to track activity
-	rs := &responseState{ResponseWriter: w}
+	trackedWriter := &responseState{ResponseWriter: w}
+	interpolator := interpolate.New(r)
 
-	// 3. Middleware Execution
-	for _, mwID := range node.Middlewares {
-		mwExpr := tree.MiddlewarePool[mwID]
-		handled := false
+	serviceMetadataIndex := tree.ActionMetadata[node.ActionIndex]
+	targetServiceID := tree.ActionMetadata[serviceMetadataIndex]
+	rawServiceName := tree.ActionsRegistry[targetServiceID]
 
-		// Try Built-in
-		if strings.HasPrefix(mwExpr, "$") {
-			if handler := m.resolveBuiltinMiddleware(mwExpr); handler != nil {
-				handler(rs, r)
-				handled = true
+	mwCount := tree.ActionMetadata[node.ActionIndex+1]
+	resolvedMiddlewares := make([]string, mwCount)
+
+	if mwCount > 0 {
+		baseOffset := node.ActionIndex + 2
+		for i := range mwCount {
+			mwMetaIndex := tree.ActionMetadata[baseOffset+i]
+			rawMwName := tree.ActionsRegistry[tree.ActionMetadata[mwMetaIndex]]
+
+			opLen := tree.ActionMetadata[mwMetaIndex+1]
+			if opLen > 0 {
+				opOffset := mwMetaIndex + 2
+				ops := tree.ActionMetadata[opOffset : opOffset+opLen]
+				resolvedMiddlewares[i] = interpolator.Replace(rawMwName, ops)
+			} else {
+				resolvedMiddlewares[i] = rawMwName
 			}
-		} else {
-			// Try External UDS
-			if !m.Forwarder.ForwardMiddleware(rs, r, r.URL.Path, mwExpr) {
+		}
+	}
+	// 3. Middleware Execution
+	for _, mwExpr := range resolvedMiddlewares {
+		isHandled := false
+
+		if strings.HasPrefix(mwExpr, "$") {
+			// Internal built-in middleware logic
+			if handler := m.resolveBuiltinMiddleware(mwExpr); handler != nil {
+				handler(trackedWriter, r)
+				isHandled = true
+			} else {
+				log.Printf("[Error] Failed to resolve built-in middleware: %s", mwExpr)
+				http.Error(trackedWriter, "Internal Middleware Error", http.StatusInternalServerError)
 				return
 			}
-			handled = true
+		} else {
+			// External middleware (usually over UDS)
+			if !m.Forwarder.ForwardMiddleware(trackedWriter, r, r.URL.Path, mwExpr) {
+				// If forwarding fails or is intercepted, stop execution
+				return
+			}
+			isHandled = true
 		}
 
-		if handled && rs.wroteHeader {
+		// If a middleware has already sent a response, terminate the chain
+		if isHandled && trackedWriter.wroteHeader {
 			return
 		}
 	}
 
+	finalServiceName := rawServiceName
+	if opCount := tree.ActionMetadata[serviceMetadataIndex+1]; opCount > 0 {
+		offset := serviceMetadataIndex + 2
+		ops := tree.ActionMetadata[offset : offset+opCount]
+		finalServiceName = interpolator.Replace(rawServiceName, ops)
+	}
+
 	// 4. Virtual Service Check
-	if strings.HasPrefix(serviceName, "$") {
-		if handler := m.resolveVirtualService(serviceName); handler != nil {
-			handler(rs, r)
+	if strings.HasPrefix(finalServiceName, "$") {
+		if handler := m.resolveVirtualService(finalServiceName); handler != nil {
+			handler(trackedWriter, r)
 			return
 		}
-		http.Error(rs, "Unknown Virtual Service: "+serviceName, http.StatusInternalServerError)
+		log.Printf("[Error] Virtual service handler not found: %s", finalServiceName)
+		http.Error(trackedWriter, "Unknown Virtual Service: "+finalServiceName, http.StatusInternalServerError)
 		return
 	}
 
 	// 5. Load Balancing (Protected by RLock)
 	m.NodeLock.RLock()
-	nodes, ok := m.Nodes[serviceName]
-	indexPtr := m.Indices[serviceName]
+	availableNodes, serviceExists := m.Nodes[finalServiceName]
+	roundRobinIndex := m.Indices[finalServiceName]
 	m.NodeLock.RUnlock()
 
-	if !ok || len(nodes) == 0 {
-		log.Printf("No healthy nodes for service: %s", serviceName)
+	if !serviceExists || len(availableNodes) == 0 {
+		log.Printf("[Warn] No healthy upstream nodes available for service: %s", finalServiceName)
 		metrics.Global.IncErrors()
-		http.Error(rs, "Service Unavailable", http.StatusServiceUnavailable)
+		http.Error(trackedWriter, "Service Unavailable", http.StatusServiceUnavailable)
 		return
 	}
 
-	idx := atomic.AddUint32(indexPtr, 1) % uint32(len(nodes))
-	targetNode := nodes[idx]
-
+	nextIdx := atomic.AddUint32(roundRobinIndex, 1) % uint32(len(availableNodes))
+	targetNode := availableNodes[nextIdx]
 	// 6. Final Backend Forwarding
-	m.Forwarder.Forward(rs, r, serviceName, targetNode)
+	m.Forwarder.Forward(trackedWriter, r, finalServiceName, targetNode)
 }
 
 func (m *Manager) StartUDSListener(socketPath string) error {
