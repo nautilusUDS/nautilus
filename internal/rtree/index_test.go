@@ -103,7 +103,10 @@ func TestRouteTree_Search(t *testing.T) {
 			}
 
 			require.True(t, exists, "Expected match for URL: %s", tt.url)
-			assert.Equal(t, tt.expectedSvc, tree.ServicePool[node.ServiceID])
+
+			serviceIndex := tree.ActionMetadata[node.ActionIndex]
+			serviceID := tree.ActionMetadata[serviceIndex]
+			assert.Equal(t, tt.expectedSvc, tree.ActionsRegistry[serviceID], "Service ID mismatch")
 			if tt.checkMethods != 0 {
 				assert.Equal(t, tt.checkMethods, node.Methods&tt.checkMethods, "Methods bitmask mismatch")
 			}
@@ -127,10 +130,12 @@ func TestRouteTree_Compression(t *testing.T) {
 
 	node, exists := tree.Search(urlBytes)
 	assert.True(t, exists, "Route should be searchable after compression")
-	assert.Equal(t, "api-svc", tree.ServicePool[node.ServiceID])
 
 	rootEdge := tree.Root['o']
 	assert.NotZero(t, rootEdge.TargetID, "Root index at 'o' should not be empty")
+	serviceIndex := tree.ActionMetadata[node.ActionIndex]
+	serviceID := tree.ActionMetadata[serviceIndex]
+	assert.Equal(t, "api-svc", tree.ActionsRegistry[serviceID])
 
 	fragment := string(tree.FragmentPool[rootEdge.Offset:rootEdge.End])
 

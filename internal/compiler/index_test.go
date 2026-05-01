@@ -32,12 +32,17 @@ example.com/api/v3 svc-3
 		url := rtree.ReverseHost("example.com/api/v1")
 		node, exists := tree.Search(url)
 		require.True(t, exists)
-		assert.Equal(t, "svc-1", tree.ServicePool[node.ServiceID])
 
+		serviceIndex := tree.ActionMetadata[node.ActionIndex]
+		serviceID := tree.ActionMetadata[serviceIndex]
+		assert.Equal(t, "svc-1", tree.ActionsRegistry[serviceID])
+
+		mwCount := tree.ActionMetadata[node.ActionIndex+1]
 		// Verify middlewares are correctly compiled
 		var mws []string
-		for _, id := range node.Middlewares {
-			mws = append(mws, tree.MiddlewarePool[id])
+		for i := range mwCount {
+			mwMetaIndex := tree.ActionMetadata[node.ActionIndex+2+i]
+			mws = append(mws, tree.ActionsRegistry[tree.ActionMetadata[mwMetaIndex]])
 		}
 		assert.ElementsMatch(t, []string{"mw-auth", "mw-log"}, mws)
 	})
@@ -69,7 +74,9 @@ GET [a|b].io/api svc-expanded
 	for _, u := range urls {
 		node, exists := tree.Search(rtree.ReverseHost(u))
 		assert.True(t, exists, "Path %s should exist", u)
-		assert.Equal(t, "svc-expanded", tree.ServicePool[node.ServiceID])
+		serviceIndex := tree.ActionMetadata[node.ActionIndex]
+		serviceID := tree.ActionMetadata[serviceIndex]
+		assert.Equal(t, "svc-expanded", tree.ActionsRegistry[serviceID])
 	}
 }
 

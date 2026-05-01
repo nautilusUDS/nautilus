@@ -45,19 +45,18 @@ type Edge struct {
 
 // RouteTree is the primary data structure for route indexing and searching.
 type RouteTree struct {
-	Root           [256]Edge   // Entry points indexed by the first character
-	FragmentPool   []byte      // Contiguous memory for all path fragments
-	MiddlewarePool []string    // Registry of middleware identifiers
-	ServicePool    []string    // Registry of service identifiers
-	NodePool       []RouteNode // Flattened node storage for cache locality
+	Root            [256]Edge // Entry points indexed by the first character
+	FragmentPool    []byte    // Contiguous memory for all path fragments
+	ActionsRegistry []string  // Registry of middleware & service identifiers
+	ActionMetadata  []uint32
+	NodePool        []RouteNode // Flattened node storage for cache locality
 }
 
 // RouteNode represents a specific point in the routing tree.
 type RouteNode struct {
-	Edges       []Edge   // Outgoing transitions
-	Middlewares []uint32 // Indices into MiddlewarePool
-	ServiceID   uint32   // Index into ServicePool
-	Methods     uint16   // Bitmask of allowed HTTP methods; 0 if not a leaf
+	Edges       []Edge // Outgoing transitions
+	ActionIndex uint32
+	Methods     uint16 // Bitmask of allowed HTTP methods; 0 if not a leaf
 }
 
 // backtrackState stores information for DFS-based wildcard searching.
@@ -191,32 +190,30 @@ func Build(rawNodes []*RawNode) *RouteTree {
 		NodePool:     make([]RouteNode, 0, len(rawNodes)),
 	}
 
-	mwMap := make(map[string]uint32)
-	svcMap := make(map[string]uint32)
+	actionMap := make(map[string]uint32)
 
 	for _, raw := range rawNodes {
 		url := ReverseHost(raw.URL)
 		methodMask := parseMethods(raw.Methods)
 
-		svcID, exists := svcMap[raw.Service]
-		if !exists {
-			svcID = uint32(len(t.ServicePool))
-			svcMap[raw.Service] = svcID
-			t.ServicePool = append(t.ServicePool, raw.Service)
-		}
+		svcID := t.getOrCreateActionID(raw.Service, actionMap)
 
 		mwIDs := make([]uint32, len(raw.Middlewares))
 		for i, mw := range raw.Middlewares {
-			id, exists := mwMap[mw]
-			if !exists {
-				id = uint32(len(t.MiddlewarePool))
-				mwMap[mw] = id
-				t.MiddlewarePool = append(t.MiddlewarePool, mw)
-			}
-			mwIDs[i] = id
+			mwIDs[i] = t.getOrCreateActionID(mw, actionMap)
 		}
+		actionIndex := uint32(len(t.ActionMetadata))
 
-		t.insert(url, svcID, mwIDs, methodMask)
+		mwCount := len(mwIDs)
+
+		actions := make([]uint32, 2, mwCount+2)
+		actions[0] = svcID
+		actions[1] = uint32(mwCount)
+		actions = append(actions, mwIDs...)
+
+		t.ActionMetadata = append(t.ActionMetadata, actions...)
+
+		t.insert(url, actionIndex, methodMask)
 	}
 
 	totalLen := t.compress()
@@ -226,7 +223,25 @@ func Build(rawNodes []*RawNode) *RouteTree {
 	return t
 }
 
-func (t *RouteTree) insert(url []byte, svcID uint32, mws []uint32, methods uint16) {
+func (t *RouteTree) getOrCreateActionID(action string, actionMap map[string]uint32) uint32 {
+	actionID, exists := actionMap[action]
+	if !exists {
+		id := uint32(len(t.ActionsRegistry))
+		t.ActionsRegistry = append(t.ActionsRegistry, action)
+
+		actionID = uint32(len(t.ActionMetadata))
+
+
+		actionMetadata := make([]uint32, 1)
+		actionMetadata[0] = id
+		t.ActionMetadata = append(t.ActionMetadata, actionMetadata...)
+
+		actionMap[action] = actionID
+	}
+	return actionID
+}
+
+func (t *RouteTree) insert(url []byte, actionIndex uint32, methods uint16) {
 	if len(url) == 0 {
 		return
 	}
@@ -259,8 +274,7 @@ func (t *RouteTree) insert(url []byte, svcID uint32, mws []uint32, methods uint1
 		currNode = nextEdge.Node
 	}
 
-	currNode.ServiceID = svcID
-	currNode.Middlewares = mws
+	currNode.ActionIndex = actionIndex
 	currNode.Methods = methods
 }
 
@@ -343,8 +357,7 @@ func (t *RouteTree) rebuildPool(e *Edge) Edge {
 	nodeID := uint32(len(t.NodePool))
 	t.NodePool = append(t.NodePool, RouteNode{
 		Edges:       edges,
-		Middlewares: e.Node.Middlewares,
-		ServiceID:   e.Node.ServiceID,
+		ActionIndex: e.Node.ActionIndex,
 		Methods:     e.Node.Methods,
 	})
 
@@ -399,7 +412,6 @@ func ReverseHost(rawURL string) []byte {
 	slashIdx := slices.Index(url, '/')
 	if slashIdx == -1 {
 		slashIdx = len(url)
-		url = append(url, '/')
 	}
 	if slashIdx <= 1 {
 		return url
