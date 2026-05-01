@@ -3,6 +3,7 @@ package rtree
 import (
 	"bytes"
 	"log"
+	"nautilus/internal/interpolate"
 	"net/http"
 	"slices"
 	"strings"
@@ -231,9 +232,13 @@ func (t *RouteTree) getOrCreateActionID(action string, actionMap map[string]uint
 
 		actionID = uint32(len(t.ActionMetadata))
 
+		ops := interpolate.Analyze(action)
 
-		actionMetadata := make([]uint32, 1)
+		l := len(ops)
+		actionMetadata := make([]uint32, l+2)
 		actionMetadata[0] = id
+		actionMetadata[1] = uint32(l)
+		actionMetadata = append(actionMetadata, ops...)
 		t.ActionMetadata = append(t.ActionMetadata, actionMetadata...)
 
 		actionMap[action] = actionID
@@ -416,9 +421,11 @@ func ReverseHost(rawURL string) []byte {
 	if slashIdx <= 1 {
 		return url
 	}
-	// Reverse only the segment before the first slash
-	for i := 0; i < slashIdx/2; i++ {
-		url[i], url[slashIdx-1-i] = url[slashIdx-1-i], url[i]
-	}
-	return url
+
+	hostPart := string(url[:slashIdx])
+	segments := strings.Split(hostPart, ".")
+	slices.Reverse(segments)
+
+	newHost := strings.Join(segments, ".")
+	return append([]byte(newHost), url[slashIdx:]...)
 }

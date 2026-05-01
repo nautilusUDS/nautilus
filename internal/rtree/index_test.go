@@ -131,15 +131,16 @@ func TestRouteTree_Compression(t *testing.T) {
 	node, exists := tree.Search(urlBytes)
 	assert.True(t, exists, "Route should be searchable after compression")
 
-	rootEdge := tree.Root['o']
-	assert.NotZero(t, rootEdge.TargetID, "Root index at 'o' should not be empty")
 	serviceIndex := tree.ActionMetadata[node.ActionIndex]
 	serviceID := tree.ActionMetadata[serviceIndex]
 	assert.Equal(t, "api-svc", tree.ActionsRegistry[serviceID])
 
+	rootEdge := tree.Root['i']
+	assert.NotZero(t, rootEdge.TargetID, "Root index at 'i' should not be empty")
+
 	fragment := string(tree.FragmentPool[rootEdge.Offset:rootEdge.End])
 
-	expectedFragment := "o"
+	expectedFragment := "i"
 	assert.Equal(t, expectedFragment, fragment, "The entire unbranched path should be compressed into a single fragment")
 
 	assert.Equal(t, rtree.MethodGet, node.Methods)
