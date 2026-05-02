@@ -1,46 +1,102 @@
 package builtinsmware
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"log"
-	"nautilus/internal/core/builtins"
 	"net"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
-	"sync"
-	"time"
 )
+
+type MiddlewareFactory func(args ...string) HandlerFunc
+type HandlerFunc = func(*ResponseWriter, *http.Request)
+
+type ResponseWriter struct {
+	header     http.Header
+	statusCode int
+	body       *bytes.Buffer
+}
+
+func NewResponseWriter() *ResponseWriter {
+	return &ResponseWriter{
+		header:     make(http.Header),
+		body:       new(bytes.Buffer),
+		statusCode: http.StatusOK,
+	}
+}
+
+func (m *ResponseWriter) Header() http.Header {
+	return m.header
+}
+
+func (m *ResponseWriter) GetCode() int {
+	return m.statusCode
+}
+
+func (m *ResponseWriter) WriteTo(w http.ResponseWriter) error {
+	for key, values := range m.header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+
+	w.WriteHeader(m.statusCode)
+	_, err := m.body.WriteTo(w)
+	return err
+}
+
+func (m *ResponseWriter) Reply(msg string, code int) {
+	m.body.WriteString(msg)
+	m.statusCode = code
+}
+
+func (m *ResponseWriter) ReplyReader(rc io.ReadCloser, code int) error {
+	defer rc.Close()
+	m.statusCode = code
+	_, err := io.Copy(m.body, rc)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func InvalidMiddleware(w *ResponseWriter, r *http.Request) {
+	w.body.WriteString("Invalid Middleware")
+	w.statusCode = http.StatusBadRequest
+}
 
 // --- Header Operations ---
 
-func SetHeader(args ...string) http.HandlerFunc {
+func SetHeader(args ...string) HandlerFunc {
 	key, val := parseTwoArgs(args)
-	return func(w http.ResponseWriter, r *http.Request) {
+	return func(w *ResponseWriter, r *http.Request) {
 		r.Header.Set(key, val)
 	}
 }
 
-func DelHeader(args ...string) http.HandlerFunc {
+func DelHeader(args ...string) HandlerFunc {
 	key, _ := parseTwoArgs(args)
-	return func(w http.ResponseWriter, r *http.Request) {
+	return func(w *ResponseWriter, r *http.Request) {
 		r.Header.Del(key)
 	}
 }
 
-func SetHost(args ...string) http.HandlerFunc {
+func SetHost(args ...string) HandlerFunc {
 	host, _ := parseTwoArgs(args)
-	return func(w http.ResponseWriter, r *http.Request) {
+	return func(w *ResponseWriter, r *http.Request) {
 		r.Host = host
 	}
 }
 
 // --- Path & Query Operations ---
 
-func PathTrimPrefix(args ...string) http.HandlerFunc {
+func PathTrimPrefix(args ...string) HandlerFunc {
 	prefix, _ := parseTwoArgs(args)
-	return func(w http.ResponseWriter, r *http.Request) {
+	return func(w *ResponseWriter, r *http.Request) {
 
 		if after, ok := strings.CutPrefix(r.URL.Path, prefix); ok {
 			r.URL.Path = after
@@ -53,9 +109,9 @@ func PathTrimPrefix(args ...string) http.HandlerFunc {
 	}
 }
 
-func RewritePath(args ...string) http.HandlerFunc {
+func RewritePath(args ...string) HandlerFunc {
 	old, new := parseTwoArgs(args)
-	return func(w http.ResponseWriter, r *http.Request) {
+	return func(w *ResponseWriter, r *http.Request) {
 		r.URL.Path = strings.ReplaceAll(r.URL.Path, old, new)
 
 		if r.URL.RawPath != "" {
@@ -65,9 +121,9 @@ func RewritePath(args ...string) http.HandlerFunc {
 	}
 }
 
-func SetQuery(args ...string) http.HandlerFunc {
+func SetQuery(args ...string) HandlerFunc {
 	key, val := parseTwoArgs(args)
-	return func(w http.ResponseWriter, r *http.Request) {
+	return func(w *ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		q.Set(key, val)
 		r.URL.RawQuery = q.Encode()
@@ -77,48 +133,49 @@ func SetQuery(args ...string) http.HandlerFunc {
 
 // --- Security & Auth ---
 
-func BasicAuth(args ...string) http.HandlerFunc {
+func BasicAuth(args ...string) HandlerFunc {
 	user, pass := parseTwoArgs(args)
-	return func(w http.ResponseWriter, r *http.Request) {
+	return func(w *ResponseWriter, r *http.Request) {
 		u, p, ok := r.BasicAuth()
 		if !ok || u != user || p != pass {
-			w.Header().Set("WWW-Authenticate", `Basic realm="Nautilus Protected"`)
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			w.statusCode = http.StatusUnauthorized
+			w.header.Set("WWW-Authenticate", `Basic realm="Nautilus Protected"`)
 		}
 	}
 }
 
-func IPAllow(args ...string) http.HandlerFunc {
+func IPAllow(args ...string) HandlerFunc {
 	if len(args) != 1 {
 		log.Printf("IPAllow error: expected 1 argument")
-		return func(w http.ResponseWriter, r *http.Request) {}
+		return InvalidMiddleware
 	}
 	_, ipNet, err := net.ParseCIDR(args[0])
 	if err != nil {
 		log.Printf("IPAllow error: invalid CIDR %s", args)
-		return func(w http.ResponseWriter, r *http.Request) {}
+		return InvalidMiddleware
 	}
-	return func(w http.ResponseWriter, r *http.Request) {
+	return func(w *ResponseWriter, r *http.Request) {
 		ipStr, _, _ := net.SplitHostPort(r.RemoteAddr)
 		ip := net.ParseIP(ipStr)
 		if !ipNet.Contains(ip) {
-			http.Error(w, "Forbidden: IP not allowed", http.StatusForbidden)
+			w.statusCode = http.StatusForbidden
+			w.body.WriteString("Forbidden: IP not allowed")
 		}
 	}
 }
 
 // --- Debugging & Utilities ---
 
-func Log(args ...string) http.HandlerFunc {
+func Log(args ...string) HandlerFunc {
 	prefix, _ := parseTwoArgs(args)
-	return func(w http.ResponseWriter, r *http.Request) {
+	return func(w *ResponseWriter, r *http.Request) {
 		fmt.Printf("[%s] %s %s from %s\n", prefix, r.Method, r.URL.Path, r.RemoteAddr)
 	}
 }
 
 // --- Registry ---
 
-var Registry = map[string]builtins.Factory{
+var Registry = map[string]MiddlewareFactory{
 	"$SetHeader":      SetHeader,
 	"$DelHeader":      DelHeader,
 	"$SetHost":        SetHost,
@@ -127,9 +184,7 @@ var Registry = map[string]builtins.Factory{
 	"$SetQuery":       SetQuery,
 	"$BasicAuth":      BasicAuth,
 	"$IPAllow":        IPAllow,
-	"$MaxBodySize":    MaxBodySize,
 	"$Log":            Log,
-	"$RateLimit":      RateLimit,
 }
 
 // IsValid checks if an expression looks like a builtin and if it exists in the registry.

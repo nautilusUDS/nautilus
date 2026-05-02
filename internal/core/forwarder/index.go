@@ -3,8 +3,8 @@ package forwarder
 import (
 	"context"
 	"errors"
-	"io"
 	"log"
+	"nautilus/internal/core/builtins/builtinsmware"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -27,7 +27,7 @@ func NewForwarder(onFailure onFailureFunc) *Forwarder {
 	}
 }
 
-func (f *Forwarder) ForwardMiddleware(w http.ResponseWriter, r *http.Request, mwPath, nodePath string) bool {
+func (f *Forwarder) ForwardMiddleware(w *builtinsmware.ResponseWriter, r *http.Request, mwPath, nodePath string) bool {
 	transport := f.getTransport(nodePath)
 	client := &http.Client{
 		Transport: transport,
@@ -39,7 +39,7 @@ func (f *Forwarder) ForwardMiddleware(w http.ResponseWriter, r *http.Request, mw
 	}
 	mwReq, err := http.NewRequestWithContext(r.Context(), "GET", "http://localhost"+mwPath, nil)
 	if err != nil {
-		http.Error(w, "Middleware Init Error", http.StatusInternalServerError)
+		w.Reply("Middleware Init Error", http.StatusInternalServerError)
 		return false
 	}
 
@@ -68,7 +68,7 @@ func (f *Forwarder) ForwardMiddleware(w http.ResponseWriter, r *http.Request, mw
 			f.transports.Delete(nodePath)
 		}
 
-		http.Error(w, "Middleware Service Unavailable", http.StatusServiceUnavailable)
+		w.Reply("Middleware Service Unavailable", http.StatusServiceUnavailable)
 		return false
 	}
 	defer resp.Body.Close()
@@ -79,8 +79,8 @@ func (f *Forwarder) ForwardMiddleware(w http.ResponseWriter, r *http.Request, mw
 				w.Header().Add(k, v)
 			}
 		}
-		w.WriteHeader(resp.StatusCode)
-		io.Copy(w, resp.Body)
+
+		w.ReplyReader(resp.Body, resp.StatusCode)
 		return false
 	}
 

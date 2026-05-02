@@ -93,9 +93,9 @@ func (m *Manager) UpdateServiceNodes(serviceName string, nodes []string) {
 }
 
 // resolveBuiltinMiddleware parses and caches functional middleware expressions.
-func (m *Manager) resolveBuiltinMiddleware(expr string) http.HandlerFunc {
+func (m *Manager) resolveBuiltinMiddleware(expr string) builtinsmware.HandlerFunc {
 	if h, ok := m.builtinCache.Load(expr); ok {
-		return h.(http.HandlerFunc)
+		return h.(builtinsmware.HandlerFunc)
 	}
 
 	funcName, args, err := builtins.ParseDirective(expr)
@@ -211,7 +211,12 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(mwExpr, "$") {
 			// Internal built-in middleware logic
 			if handler := m.resolveBuiltinMiddleware(mwExpr); handler != nil {
-				handler(trackedWriter, r)
+				resp := builtinsmware.NewResponseWriter()
+				handler(resp, r)
+				if resp.GetCode() != http.StatusOK {
+					resp.WriteTo(trackedWriter)
+					return
+				}
 				isHandled = true
 			} else {
 				log.Printf("[Error] Failed to resolve built-in middleware: %s", mwExpr)
@@ -220,8 +225,10 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		} else {
 			// External middleware (usually over UDS)
-			if !m.Forwarder.ForwardMiddleware(trackedWriter, r, r.URL.Path, mwExpr) {
+			resp := builtinsmware.NewResponseWriter()
+			if !m.Forwarder.ForwardMiddleware(resp, r, r.URL.Path, mwExpr) {
 				// If forwarding fails or is intercepted, stop execution
+				resp.WriteTo(trackedWriter)
 				return
 			}
 			isHandled = true
