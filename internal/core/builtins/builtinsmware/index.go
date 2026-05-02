@@ -50,11 +50,6 @@ func PathTrimPrefix(args ...string) http.HandlerFunc {
 			}
 			r.RequestURI = r.URL.RequestURI()
 		}
-
-		r.URL.Path = strings.TrimPrefix(r.URL.Path, prefix)
-		if r.URL.RawPath != "" {
-			r.URL.RawPath = strings.TrimPrefix(r.URL.RawPath, prefix)
-		}
 	}
 }
 
@@ -112,66 +107,12 @@ func IPAllow(args ...string) http.HandlerFunc {
 	}
 }
 
-// --- Security & Limits ---
-
-func MaxBodySize(args ...string) http.HandlerFunc {
-	sizeStr, _ := parseTwoArgs(args)
-	size, err := strconv.ParseInt(sizeStr, 10, 64)
-	if err != nil {
-		log.Printf("MaxBodySize error: invalid size %s", args)
-		return func(w http.ResponseWriter, r *http.Request) {}
-	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, size)
-	}
-}
-
 // --- Debugging & Utilities ---
 
 func Log(args ...string) http.HandlerFunc {
 	prefix, _ := parseTwoArgs(args)
 	return func(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("[%s] %s %s from %s\n", prefix, r.Method, r.URL.Path, r.RemoteAddr)
-	}
-}
-
-// --- RateLimit ---
-
-// --- Rate Limiting ---
-
-func RateLimit(args ...string) http.HandlerFunc {
-	if len(args) < 2 {
-		log.Printf("RateLimit error: expected (count, seconds)")
-		return func(w http.ResponseWriter, r *http.Request) {}
-	}
-
-	limit, _ := strconv.Atoi(args[0])
-	seconds, _ := strconv.Atoi(args[1])
-	duration := time.Duration(seconds) * time.Second
-
-	var mu sync.Mutex
-	clients := make(map[string][]time.Time)
-
-	return func(w http.ResponseWriter, r *http.Request) {
-		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
-
-		mu.Lock()
-		defer mu.Unlock()
-
-		now := time.Now()
-		var valid []time.Time
-		for _, t := range clients[ip] {
-			if now.Sub(t) < duration {
-				valid = append(valid, t)
-			}
-		}
-
-		if len(valid) >= limit {
-			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
-			return
-		}
-
-		clients[ip] = append(valid, now)
 	}
 }
 
