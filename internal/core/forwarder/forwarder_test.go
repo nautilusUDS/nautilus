@@ -3,6 +3,7 @@ package forwarder_test
 import (
 	"context"
 	"io"
+	"nautilus/internal/core/builtins/builtinsmware"
 	"nautilus/internal/core/forwarder"
 	"net"
 	"net/http"
@@ -22,7 +23,7 @@ func TestForwarder_Forward(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	socketPath := filepath.Join(tmpDir, "test.sock")
-	
+
 	l, err := net.Listen("unix", socketPath)
 	require.NoError(t, err)
 	defer l.Close()
@@ -39,7 +40,7 @@ func TestForwarder_Forward(t *testing.T) {
 
 	// 2. Use Forwarder to send request to UDS
 	f := forwarder.NewForwarder(nil)
-	
+
 	req := httptest.NewRequest("GET", "http://example.com/api/test", nil)
 	w := httptest.NewRecorder()
 
@@ -59,7 +60,7 @@ func TestForwarder_ForwardMiddleware(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	socketPath := filepath.Join(tmpDir, "mw.sock")
-	
+
 	l, err := net.Listen("unix", socketPath)
 	require.NoError(t, err)
 	defer l.Close()
@@ -82,7 +83,7 @@ func TestForwarder_ForwardMiddleware(t *testing.T) {
 	t.Run("Authorized", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "http://example.com/", nil)
 		req.Header.Set("X-Auth", "valid")
-		w := httptest.NewRecorder()
+		w := builtinsmware.NewResponseWriter()
 
 		ok := f.ForwardMiddleware(w, req, "/", socketPath)
 		assert.True(t, ok)
@@ -92,10 +93,10 @@ func TestForwarder_ForwardMiddleware(t *testing.T) {
 	t.Run("Unauthorized", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "http://example.com/", nil)
 		req.Header.Set("X-Auth", "invalid")
-		w := httptest.NewRecorder()
+		w := builtinsmware.NewResponseWriter()
 
 		ok := f.ForwardMiddleware(w, req, "/", socketPath)
 		assert.False(t, ok)
-		assert.Equal(t, http.StatusUnauthorized, w.Code)
+		assert.Equal(t, http.StatusUnauthorized, w.GetCode())
 	})
 }
