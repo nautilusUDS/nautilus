@@ -6,64 +6,25 @@ import (
 	"testing"
 )
 
-type mockStore struct {
-	services     map[string]bool
-	nodes        map[string][]string
-	upsertCalled int
-}
-
-func newMockStore() *mockStore {
-	return &mockStore{
-		services: make(map[string]bool),
-		nodes:    make(map[string][]string),
-	}
-}
-
-func (m *mockStore) UpsertService(serviceID string) error {
-	m.services[serviceID] = true
-	m.upsertCalled++
-	return nil
-}
-
-func (m *mockStore) RegisterNode(nodeID, serviceID string) error {
-	m.nodes[serviceID] = append(m.nodes[serviceID], nodeID)
-	return nil
-}
-
-func (m *mockStore) UnregisterNode(nodeID string) error {
-	return nil
-}
-
-func (m *mockStore) UnregisterAllNodes(serviceID string) error {
-	delete(m.nodes, serviceID)
-	return nil
-}
-
-func (m *mockStore) ReplaceServiceNodes(serviceID string, nodeIDs []string) error {
-	m.nodes[serviceID] = nodeIDs
-	return nil
-}
-
-func (m *mockStore) GetNodesByService(serviceID string) ([]string, error) {
-	return m.nodes[serviceID], nil
-}
-
 func TestRegistry_Scan(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "nibble-registry-test-*")
+	tmpDir, err := os.MkdirTemp("", "nautilus-registry-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	reg := NewRegistry(tmpDir)
+	reg, err := NewRegistry(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create registry: %v", err)
+	}
 
 	// Test case 1: Empty directory
-	changed, err := reg.Scan()
+	err = reg.Scan("")
 	if err != nil {
 		t.Errorf("Scan failed: %v", err)
 	}
-	if changed {
-		t.Errorf("expected no changes in empty directory")
+	if len(reg.services) != 0 {
+		t.Errorf("expected no services in empty directory, got %d", len(reg.services))
 	}
 
 	// Test case 2: Add services and nodes
@@ -88,22 +49,44 @@ func TestRegistry_Scan(t *testing.T) {
 	os.WriteFile(v2Path, []byte(""), 0644)
 	os.WriteFile(appPath, []byte(""), 0644)
 
-	changed, err = reg.Scan()
+	err = reg.Scan("")
 	if err != nil {
 		t.Errorf("Scan failed: %v", err)
 	}
-	if !changed {
-		t.Errorf("expected changes after adding sockets")
+
+	if len(reg.services) != 2 {
+		t.Errorf("expected 2 services, got %d", len(reg.services))
 	}
 
-	// Test case 4: Remove a node
+	if ss, ok := reg.services["api"]; !ok || len(ss.nodes) != 2 {
+		t.Errorf("expected 2 nodes for api service, got %v", ss)
+	}
+
+	// Test case 3: Targeted scan
 	os.Remove(v1Path)
-	changed, err = reg.Scan()
+	err = reg.Scan("api")
 	if err != nil {
-		t.Errorf("Scan failed: %v", err)
-	}
-	if !changed {
-		t.Errorf("expected changes after removing a socket")
+		t.Errorf("ScanService failed: %v", err)
 	}
 
+	if ss, ok := reg.services["api"]; !ok || len(ss.nodes) != 1 {
+		t.Errorf("expected 1 node for api service after removal and targeted scan, got %v", ss)
+	} else {
+		// Check if the path is relative (doesn't start with / or C:)
+		nodePath := ss.nodes[0]
+		if !filepath.IsAbs(nodePath) {
+			t.Errorf("expected absolute node path, got relative: %s", nodePath)
+		}
+	}
+
+	// Test case 4: Remove all nodes of a service
+	os.Remove(v2Path)
+	err = reg.Scan("api")
+	if err != nil {
+		t.Errorf("ScanService failed: %v", err)
+	}
+
+	if _, ok := reg.services["api"]; ok {
+		t.Errorf("expected api service to be removed after all nodes are gone")
+	}
 }

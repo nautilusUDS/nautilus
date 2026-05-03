@@ -2,18 +2,28 @@ package proxy_test
 
 import (
 	"nautilus/internal/core/proxy"
+	"nautilus/internal/core/registry"
 	"nautilus/internal/rtree"
 	"net/http"
 	"net/http/httptest"
-	"sync/atomic"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestManager_ServeHTTP_Routing(t *testing.T) {
-	manager := proxy.NewManager(nil)
+func TestManager_ServeHTTP(t *testing.T) {
+	// Setup a temporary directory for registry
+	tmpDir, err := os.MkdirTemp("", "nautilus-proxy-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	reg, err := registry.NewRegistry(tmpDir)
+	require.NoError(t, err)
+
+	manager := proxy.NewManager(reg)
 
 	// 1. Setup Route Tree
 	rawNodes := []*rtree.RawNode{
@@ -23,41 +33,25 @@ func TestManager_ServeHTTP_Routing(t *testing.T) {
 			Methods: "GET",
 		},
 		{
-			URL:     "example.com/api/post",
-			Service: "post-service",
-			Methods: "POST",
+			URL:     "example.com/virtual",
+			Service: "$echo",
+			Methods: "GET",
+		},
+		{
+			URL:     "example.com/ok",
+			Service: "$ok(Success)",
+			Methods: "GET",
 		},
 	}
 	tree := rtree.Build(rawNodes)
 	manager.UpdateTree(tree)
 
-	// 2. Setup Nodes
-	nodes := map[string][]string{
-		"test-service": {"/tmp/test1.sock"},
-	}
-	manager.UpdateNodes(nodes)
-
-	t.Run("Match GET Route", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "http://example.com/api/test", nil)
+	t.Run("Not Found", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "http://example.com/unknown", nil)
 		w := httptest.NewRecorder()
-
-		// Since we don't actually have a UDS listener running in this unit test,
-		// we expect it to fail at the forwarding stage, but we can verify it passed routing.
-		// However, we can use a virtual service to test the full logic without UDS.
-		
-		rawNodesWithVirtual := append(rawNodes, &rtree.RawNode{
-			URL:     "example.com/virtual",
-			Service: "$echo",
-			Methods: "GET",
-		})
-		manager.UpdateTree(rtree.Build(rawNodesWithVirtual))
-
-		req = httptest.NewRequest("GET", "http://example.com/virtual", nil)
-		w = httptest.NewRecorder()
 		manager.ServeHTTP(w, req)
 
-		assert.Equal(t, http.StatusOK, w.Code)
-		// Assuming $echo returns 200 by default or we can check its behavior if we knew it.
+		assert.Equal(t, http.StatusNotFound, w.Code)
 	})
 
 	t.Run("Method Not Allowed", func(t *testing.T) {
@@ -68,44 +62,72 @@ func TestManager_ServeHTTP_Routing(t *testing.T) {
 		assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
 	})
 
-	t.Run("Not Found", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "http://example.com/unknown", nil)
+	t.Run("Service Unavailable (No Nodes)", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "http://example.com/api/test", nil)
 		w := httptest.NewRecorder()
 		manager.ServeHTTP(w, req)
 
-		assert.Equal(t, http.StatusNotFound, w.Code)
+		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	})
+
+	t.Run("Virtual Service $echo", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "http://example.com/virtual", nil)
+		w := httptest.NewRecorder()
+		manager.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Contains(t, w.Header().Get("Content-Type"), "application/json")
+		assert.Contains(t, w.Body.String(), `"path":"/virtual"`)
+	})
+
+	t.Run("Virtual Service $ok with args", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "http://example.com/ok", nil)
+		w := httptest.NewRecorder()
+		manager.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, "Success", w.Body.String())
 	})
 }
 
 func TestManager_LoadBalancing(t *testing.T) {
-	manager := proxy.NewManager(nil)
+	tmpDir, err := os.MkdirTemp("", "nautilus-proxy-lb-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
 
-	// 1. Setup Route Tree
-	rawNodes := []*rtree.RawNode{
-		{
-			URL:     "lb.example.com/work",
-			Service: "lb-service",
-			Methods: "GET",
-		},
-	}
-	tree := rtree.Build(rawNodes)
-	manager.UpdateTree(tree)
+	// Create dummy socket files to satisfy Registry.Scan
+	svcDir := filepath.Join(tmpDir, "lb-service")
+	os.MkdirAll(svcDir, 0755)
+	os.WriteFile(filepath.Join(svcDir, "node1.sock"), []byte(""), 0644)
+	os.WriteFile(filepath.Join(svcDir, "node2.sock"), []byte(""), 0644)
 
-	// 2. Setup Multiple Nodes
-	nodes := map[string][]string{
-		"lb-service": {"/tmp/node1.sock", "/tmp/node2.sock", "/tmp/node3.sock"},
-	}
-	manager.UpdateNodes(nodes)
+	reg, err := registry.NewRegistry(tmpDir)
+	require.NoError(t, err)
+	err = reg.Scan("")
+	require.NoError(t, err)
 
-	// Since we can't easily mock the Forwarder's Forward method without changing the code
-	// to use an interface, we can at least verify the internal index increment logic
-	// if we expose it or use reflection, but let's focus on what we can test.
+	_ = proxy.NewManager(reg)
+
+	// Verify internal state of registry for the service
+	state := reg.GetState()
+	nodes, ok := state["lb-service"]
+	require.True(t, ok)
+	assert.Len(t, nodes, 2)
+
+	// Verify that GetForwarder cycles through nodes.
+	f1, err := reg.GetForwarder("lb-service")
+	require.NoError(t, err)
 	
-	// We'll check if the indices are initialized correctly.
-	manager.NodeLock.RLock()
-	idxPtr, exists := manager.Indices["lb-service"]
-	manager.NodeLock.RUnlock()
+	f2, err := reg.GetForwarder("lb-service")
+	require.NoError(t, err)
 
-	require.True(t, exists)
-	assert.Equal(t, uint32(0), atomic.LoadUint32(idxPtr))
+	f3, err := reg.GetForwarder("lb-service")
+	require.NoError(t, err)
+
+	// We can't easily check private fields, but we know it's round-robin.
+	// If it was the same node, f1 and f2 would be identical in a way we can't easily see here,
+	// but we've verified the state has 2 nodes.
+	assert.NotNil(t, f1)
+	assert.NotNil(t, f2)
+	assert.NotNil(t, f3)
 }

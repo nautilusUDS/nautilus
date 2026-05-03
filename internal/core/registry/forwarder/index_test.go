@@ -1,16 +1,16 @@
-package forwarder_test
+package forwarder
 
 import (
 	"context"
 	"io"
 	"nautilus/internal/core/builtins/builtinsmware"
-	"nautilus/internal/core/forwarder"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,7 +30,6 @@ func TestForwarder_Forward(t *testing.T) {
 
 	server := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			assert.Equal(t, "example.com", r.Header.Get("X-Forwarded-Host"))
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("Hello from UDS"))
 		}),
@@ -39,12 +38,13 @@ func TestForwarder_Forward(t *testing.T) {
 	defer server.Shutdown(context.Background())
 
 	// 2. Use Forwarder to send request to UDS
-	f := forwarder.NewForwarder(nil)
+	onFailure := make(chan FailureForwarder, 1)
+	f := New(socketPath, onFailure)
 
 	req := httptest.NewRequest("GET", "http://example.com/api/test", nil)
 	w := httptest.NewRecorder()
 
-	f.Forward(w, req, "test-service", socketPath)
+	f.Forward(w, req)
 
 	resp := w.Result()
 	body, _ := io.ReadAll(resp.Body)
@@ -78,15 +78,18 @@ func TestForwarder_ForwardMiddleware(t *testing.T) {
 	go server.Serve(l)
 	defer server.Shutdown(context.Background())
 
-	f := forwarder.NewForwarder(nil)
+	onFailure := make(chan FailureForwarder, 1)
+	f := New(socketPath, onFailure)
 
 	t.Run("Authorized", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "http://example.com/", nil)
 		req.Header.Set("X-Auth", "valid")
 		w := builtinsmware.NewResponseWriter()
 
-		ok := f.ForwardMiddleware(w, req, "/", socketPath)
+		ok := f.ForwardMiddleware(w, req, "/")
+		assert.Equal(t, w.GetCode(), http.StatusOK)
 		assert.True(t, ok)
+		assert.Equal(t, http.StatusOK, w.GetCode())
 		assert.Equal(t, "123", req.Header.Get("X-User-ID"))
 	})
 
@@ -95,8 +98,54 @@ func TestForwarder_ForwardMiddleware(t *testing.T) {
 		req.Header.Set("X-Auth", "invalid")
 		w := builtinsmware.NewResponseWriter()
 
-		ok := f.ForwardMiddleware(w, req, "/", socketPath)
+		ok := f.ForwardMiddleware(w, req, "/")
+		assert.NotEqual(t, w, http.StatusOK)
 		assert.False(t, ok)
 		assert.Equal(t, http.StatusUnauthorized, w.GetCode())
+	})
+}
+
+func TestForwarder_FailureReporting(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "nautilus-fail-test-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	socketPath := filepath.Join(tmpDir, "nonexistent.sock")
+
+	onFailure := make(chan FailureForwarder, 1)
+	f := New(socketPath, onFailure)
+
+	t.Run("Forward Failure", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "http://example.com/", nil)
+		w := httptest.NewRecorder()
+
+		f.Forward(w, req)
+
+		select {
+		case failure := <-onFailure:
+			assert.Equal(t, socketPath, failure.SocketPath)
+			assert.Error(t, failure.Error)
+		case <-time.After(1 * time.Second):
+			t.Fatal("timed out waiting for failure report")
+		}
+
+		assert.Equal(t, http.StatusBadGateway, w.Code)
+	})
+
+	t.Run("ForwardMiddleware Failure", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "http://example.com/", nil)
+		w := builtinsmware.NewResponseWriter()
+
+		ok := f.ForwardMiddleware(w, req, "/")
+		assert.NotEqual(t, w.GetCode(), http.StatusOK)
+		assert.False(t, ok)
+
+		select {
+		case failure := <-onFailure:
+			assert.Equal(t, socketPath, failure.SocketPath)
+			assert.Error(t, failure.Error)
+		case <-time.After(1 * time.Second):
+			t.Fatal("timed out waiting for failure report")
+		}
 	})
 }

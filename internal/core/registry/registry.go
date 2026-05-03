@@ -1,62 +1,74 @@
 package registry
 
 import (
-	"maps"
+	"log"
+	"nautilus/internal/core/registry/forwarder"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
-	"time"
+	"sync/atomic"
 )
 
-type NodesChangedCallback func(serviceName string, nodes []string)
-type NodesChangedState struct {
-	ServiceName string
-	Nodes       []string
-}
-
 type Registry struct {
-	mu       sync.RWMutex
-	services map[string]*ServiceNodes
-	baseDir  string
+	mu      sync.RWMutex
+	baseDir string
 
-	unhealthy   map[string]time.Time
-	unhealthyMu sync.RWMutex
+	services map[string]*ServiceSet  // serviceName -> node list & load balanced index
+	nodeMap  map[string]*nodeContext // nodePath -> forwarder & service name
 
-	subMu       sync.RWMutex
-	subscribers []NodesChangedCallback
+	failureChan chan forwarder.FailureForwarder
 }
 
-type ServiceNodes struct {
+type ServiceSet struct {
 	nodes []string
 	index uint32
 }
 
-func (s *ServiceNodes) Count() int {
-	return len(s.nodes)
+type nodeContext struct {
+	serviceName string
+	forwarder   *forwarder.Forwarder
 }
 
-func NewRegistry(baseDir string) *Registry {
-	return &Registry{
-		services: make(map[string]*ServiceNodes),
-		baseDir:  baseDir,
+func NewRegistry(baseDir string) (*Registry, error) {
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return nil, err
 	}
+
+	r := &Registry{
+		services:    make(map[string]*ServiceSet),
+		nodeMap:     make(map[string]*nodeContext),
+		baseDir:     strings.TrimRight(filepath.ToSlash(absBase), "/"),
+		failureChan: make(chan forwarder.FailureForwarder, 100),
+	}
+
+	go r.listenFailures()
+
+	return r, nil
 }
 
 func (r *Registry) BaseDir() string {
 	return r.baseDir
 }
 
+func (r *Registry) listenFailures() {
+	for failure := range r.failureChan {
+		log.Printf("[Registry] Node failure detected: %s, error: %v", failure.SocketPath, failure.Error)
+		r.RemoveNode(failure.SocketPath, true)
+	}
+}
+
 // GetNodes returns a copy of the current physical nodes for a service
 func (r *Registry) GetNodes(serviceName string) []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	sn, ok := r.services[serviceName]
+	ss, ok := r.services[serviceName]
 	if !ok {
 		return nil
 	}
-	return slices.Clone(sn.nodes)
+	return slices.Clone(ss.nodes)
 }
 
 // GetState returns a snapshot of all services and their current nodes.
@@ -65,16 +77,49 @@ func (r *Registry) GetState() map[string][]string {
 	defer r.mu.RUnlock()
 
 	state := make(map[string][]string)
-	for name, sn := range r.services {
-		state[name] = slices.Clone(sn.nodes)
+	for name, ss := range r.services {
+		state[name] = slices.Clone(ss.nodes)
 	}
 	return state
 }
 
-// Scan returns (changed, error)
-func (r *Registry) Scan() (bool, error) {
+func (r *Registry) GetForwarder(serviceName string) (*forwarder.Forwarder, error) {
+	r.mu.RLock()
+	ss, exists := r.services[serviceName]
+	r.mu.RUnlock()
+
+	if !exists || len(ss.nodes) == 0 {
+		return nil, os.ErrNotExist
+	}
+
+	idx := atomic.AddUint32(&ss.index, 1) % uint32(len(ss.nodes))
+	nodePath := ss.nodes[idx]
+
+	r.mu.RLock()
+	ctx, ok := r.nodeMap[nodePath]
+	r.mu.RUnlock()
+
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+
+	return ctx.forwarder, nil
+}
+
+// Scan satisfies the Watcher's expectation. It performs either a full scan
+// or a targeted scan based on the provided target string.
+func (r *Registry) Scan(target string) error {
+	// If target is empty or matches baseDir, perform full scan
+	if target == "" || target == r.baseDir {
+		return r.fullScan()
+	}
+
+	return r.ScanService(target)
+}
+
+func (r *Registry) fullScan() error {
 	scannedState := make(map[string][]string)
-	var changes []NodesChangedState
+	baseLen := len(r.baseDir) + 1
 
 	err := filepath.WalkDir(r.baseDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -82,17 +127,12 @@ func (r *Registry) Scan() (bool, error) {
 		}
 
 		if !d.IsDir() && strings.HasSuffix(d.Name(), ".sock") {
-			dir := filepath.Dir(path)
-			rel, err := filepath.Rel(r.baseDir, dir)
-			if err != nil {
+			rel := filepath.ToSlash(path[baseLen:])
+			if !strings.Contains(rel, "/") {
 				return nil
 			}
 
-			serviceName := filepath.ToSlash(rel)
-			if serviceName == "." {
-				return nil
-			}
-
+			serviceName := filepath.Dir(rel)
 			scannedState[serviceName] = append(scannedState[serviceName], path)
 		}
 		return nil
@@ -100,110 +140,128 @@ func (r *Registry) Scan() (bool, error) {
 
 	if err != nil {
 		if os.IsNotExist(err) {
-			return false, nil
+			return nil
 		}
-		return false, err
-	}
-
-	r.mu.RLock()
-	currentServices := make(map[string]*ServiceNodes)
-	maps.Copy(currentServices, r.services)
-	r.mu.RUnlock()
-
-	// 1. Check for updates and additions
-	for name, nodes := range scannedState {
-		oldService, exists := currentServices[name]
-		slices.Sort(nodes)
-
-		needsUpdate := !exists
-		if exists {
-			oldNodes := slices.Clone(oldService.nodes)
-			slices.Sort(oldNodes)
-			if !slices.Equal(nodes, oldNodes) {
-				needsUpdate = true
-			}
-		}
-
-		if needsUpdate {
-			changes = append(changes, NodesChangedState{name, nodes})
-		}
-	}
-
-	// 2. Check for deletions
-	for name := range currentServices {
-		if _, stillExists := scannedState[name]; !stillExists {
-			changes = append(changes, NodesChangedState{name, nil})
-		}
-	}
-
-	if len(changes) == 0 {
-		return false, nil
-	}
-
-	r.mu.Lock()
-	newInternalState := make(map[string]*ServiceNodes)
-	for name, nodes := range scannedState {
-		newInternalState[name] = &ServiceNodes{nodes: nodes}
-	}
-	r.services = newInternalState
-	r.mu.Unlock()
-
-	r.subMu.RLock()
-	subs := slices.Clone(r.subscribers)
-	r.subMu.RUnlock()
-
-	for _, state := range changes {
-		for _, sub := range subs {
-			sub(state.ServiceName, state.Nodes)
-		}
-	}
-
-	return true, nil
-}
-
-func (r *Registry) Subscribe(callback NodesChangedCallback) {
-	r.subMu.Lock()
-	defer r.subMu.Unlock()
-	r.subscribers = append(r.subscribers, callback)
-}
-
-func (r *Registry) OnFailure(serviceName, failedNodePath string, shouldDeleteFile bool) {
-	//nodes that don't require file deletion are temporarily kept in the registry.
-	if !shouldDeleteFile {
-		return
+		return err
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	sn, ok := r.services[serviceName]
+
+	// 1. Remove services/nodes no longer present
+	for path, ctx := range r.nodeMap {
+		discovered, found := scannedState[ctx.serviceName]
+		if !found || !slices.Contains(discovered, path) {
+			r.removeNodeUnsafe(path, false)
+		}
+	}
+
+	// 2. Add new nodes and update services
+	for svcName, nodes := range scannedState {
+		for _, node := range nodes {
+			if _, exists := r.nodeMap[node]; !exists {
+				r.nodeMap[node] = &nodeContext{
+					serviceName: svcName,
+					forwarder:   forwarder.New(node, r.failureChan),
+				}
+			}
+		}
+
+		if ss, exists := r.services[svcName]; exists {
+			ss.nodes = nodes
+		} else {
+			r.services[svcName] = &ServiceSet{nodes: nodes}
+		}
+	}
+
+	return nil
+}
+
+// ScanService performs a targeted scan of a single service directory
+func (r *Registry) ScanService(serviceName string) error {
+	serviceDir := filepath.Join(r.baseDir, serviceName)
+	var discoveredNodes []string
+
+	err := filepath.WalkDir(serviceDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && strings.HasSuffix(d.Name(), ".sock") {
+			discoveredNodes = append(discoveredNodes, path)
+		}
+		return nil
+	})
+
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// 1. Identify nodes to remove
+	currentSet, exists := r.services[serviceName]
+	if exists {
+		for _, oldNode := range currentSet.nodes {
+			if !slices.Contains(discoveredNodes, oldNode) {
+				r.removeNodeUnsafe(oldNode, false)
+			}
+		}
+	}
+
+	// 2. Identify and add new nodes
+	if len(discoveredNodes) == 0 {
+		delete(r.services, serviceName)
+		return nil
+	}
+
+	for _, newNode := range discoveredNodes {
+		if _, exists := r.nodeMap[newNode]; !exists {
+			r.nodeMap[newNode] = &nodeContext{
+				serviceName: serviceName,
+				forwarder:   forwarder.New(newNode, r.failureChan),
+			}
+		}
+	}
+
+	// 3. Update service set
+	if !exists {
+		r.services[serviceName] = &ServiceSet{nodes: discoveredNodes}
+	} else {
+		r.services[serviceName].nodes = discoveredNodes
+	}
+
+	return nil
+}
+
+func (r *Registry) RemoveNode(nodePath string, shouldDeleteFile bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.removeNodeUnsafe(nodePath, shouldDeleteFile)
+}
+
+func (r *Registry) removeNodeUnsafe(nodePath string, shouldDeleteFile bool) {
+	ctx, ok := r.nodeMap[nodePath]
 	if !ok {
 		return
 	}
 
-	if shouldDeleteFile {
-		os.Remove(failedNodePath)
-	}
+	serviceName := ctx.serviceName
+	delete(r.nodeMap, nodePath)
 
-	for i, node := range sn.nodes {
-		if node == failedNodePath {
-			sn.nodes = slices.Delete(sn.nodes, i, i+1)
-			break
+	if ss, ok := r.services[serviceName]; ok {
+		for i, n := range ss.nodes {
+			if n == nodePath {
+				ss.nodes = slices.Delete(ss.nodes, i, i+1)
+				break
+			}
+		}
+		if len(ss.nodes) == 0 {
+			delete(r.services, serviceName)
 		}
 	}
 
-	updatedNodes := slices.Clone(sn.nodes)
-
-	if len(sn.nodes) == 0 {
-		delete(r.services, serviceName)
-	} else {
-		updatedNodes = nil
+	if shouldDeleteFile {
+		go os.Remove(nodePath)
 	}
-
-	r.subMu.RLock()
-	subs := slices.Clone(r.subscribers)
-	r.subMu.RUnlock()
-	for _, sub := range subs {
-		sub(serviceName, updatedNodes)
-	}
-
 }
