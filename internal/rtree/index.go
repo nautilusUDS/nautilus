@@ -235,7 +235,7 @@ func (t *RouteTree) getOrCreateActionID(action string, actionMap map[string]uint
 		ops := interpolate.Analyze(action)
 
 		l := len(ops)
-		actionMetadata := make([]uint32, l+2)
+		actionMetadata := make([]uint32, 2, l+2)
 		actionMetadata[0] = id
 		actionMetadata[1] = uint32(l)
 		actionMetadata = append(actionMetadata, ops...)
