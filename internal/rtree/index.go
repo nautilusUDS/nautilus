@@ -98,6 +98,7 @@ func (t *RouteTree) Search(url []byte) (*RouteNode, bool) {
 		node := &t.NodePool[currentEdge.TargetID]
 		fStart, fEnd := currentEdge.Offset, currentEdge.End
 		fLen := int(fEnd - fStart)
+		matched := false
 
 		// Handle Wildcard Fragment
 		if t.FragmentPool[fStart] == '*' {
@@ -117,55 +118,60 @@ func (t *RouteTree) Search(url []byte) (*RouteNode, bool) {
 					continue
 				}
 			}
-			goto ATTEMPT_BACKTRACK
+		} else {
+
+			// Handle Static Fragment matching
+			if urlIdx+fLen <= urlLen && bytes.Equal(url[urlIdx:urlIdx+fLen], t.FragmentPool[fStart:fEnd]) {
+				urlIdx += fLen
+
+				if urlIdx == urlLen {
+					if node.Methods != 0 {
+						return node, true
+					}
+				} else {
+
+					nextChar := url[urlIdx]
+					var exactMatch *Edge
+					var wildcardMatch *Edge
+
+					for i := range node.Edges {
+						e := &node.Edges[i]
+						switch t.FragmentPool[e.Offset] {
+						case nextChar:
+							exactMatch = e
+						case '*':
+							wildcardMatch = e
+						}
+					}
+
+					if exactMatch != nil {
+						if wildcardMatch != nil {
+							stack = append(stack, backtrackState{edge: wildcardMatch, urlIdx: urlIdx})
+						}
+						currentEdge = exactMatch
+						matched = true
+					} else if wildcardMatch != nil {
+						currentEdge = wildcardMatch
+						matched = true
+					}
+
+				}
+
+			}
+
 		}
 
-		// Handle Static Fragment matching
-		if urlIdx+fLen <= urlLen && bytes.Equal(url[urlIdx:urlIdx+fLen], t.FragmentPool[fStart:fEnd]) {
-			urlIdx += fLen
-
-			if urlIdx == urlLen {
-				if node.Methods != 0 {
-					return node, true
-				}
-				goto ATTEMPT_BACKTRACK
-			}
-
-			nextChar := url[urlIdx]
-			var exactMatch *Edge
-			var wildcardMatch *Edge
-
-			for i := range node.Edges {
-				e := &node.Edges[i]
-				switch t.FragmentPool[e.Offset] {
-				case nextChar:
-					exactMatch = e
-				case '*':
-					wildcardMatch = e
-				}
-			}
-
-			if exactMatch != nil {
-				if wildcardMatch != nil {
-					stack = append(stack, backtrackState{edge: wildcardMatch, urlIdx: urlIdx})
-				}
-				currentEdge = exactMatch
+		if !matched {
+			if len(stack) > 0 {
+				last := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				currentEdge = last.edge
+				urlIdx = last.urlIdx
 				continue
-			} else if wildcardMatch != nil {
-				currentEdge = wildcardMatch
-				continue
 			}
+			break
 		}
 
-	ATTEMPT_BACKTRACK:
-		if len(stack) > 0 {
-			last := stack[len(stack)-1]
-			stack = stack[:len(stack)-1]
-			currentEdge = last.edge
-			urlIdx = last.urlIdx
-			continue
-		}
-		break
 	}
 
 	return nil, false
