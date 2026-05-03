@@ -35,14 +35,14 @@ example.com/api/v3 svc-3
 
 		serviceIndex := tree.ActionMetadata[node.ActionIndex]
 		serviceID := tree.ActionMetadata[serviceIndex]
-		assert.Equal(t, "svc-1", tree.ActionsRegistry[serviceID])
+		assert.Equal(t, "svc-1", tree.GetActionName(serviceID))
 
 		mwCount := tree.ActionMetadata[node.ActionIndex+1]
 		// Verify middlewares are correctly compiled
 		var mws []string
 		for i := range mwCount {
 			mwMetaIndex := tree.ActionMetadata[node.ActionIndex+2+i]
-			mws = append(mws, tree.ActionsRegistry[tree.ActionMetadata[mwMetaIndex]])
+			mws = append(mws, tree.GetActionName(tree.ActionMetadata[mwMetaIndex]))
 		}
 		assert.ElementsMatch(t, []string{"mw-auth", "mw-log"}, mws)
 	})
@@ -76,7 +76,7 @@ GET [a|b].io/api svc-expanded
 		assert.True(t, exists, "Path %s should exist", u)
 		serviceIndex := tree.ActionMetadata[node.ActionIndex]
 		serviceID := tree.ActionMetadata[serviceIndex]
-		assert.Equal(t, "svc-expanded", tree.ActionsRegistry[serviceID])
+		assert.Equal(t, "svc-expanded", tree.GetActionName(serviceID))
 	}
 }
 

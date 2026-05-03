@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"unsafe"
 )
 
 const (
@@ -48,7 +49,7 @@ type Edge struct {
 type RouteTree struct {
 	Root            [256]Edge // Entry points indexed by the first character
 	FragmentPool    []byte    // Contiguous memory for all path fragments
-	ActionsRegistry []string  // Registry of middleware & service identifiers
+	ActionsRegistry []byte    // Registry of middleware & service identifiers
 	ActionMetadata  []uint32
 	NodePool        []RouteNode // Flattened node storage for cache locality
 }
@@ -228,7 +229,21 @@ func (t *RouteTree) getOrCreateActionID(action string, actionMap map[string]uint
 	actionID, exists := actionMap[action]
 	if !exists {
 		id := uint32(len(t.ActionsRegistry))
-		t.ActionsRegistry = append(t.ActionsRegistry, action)
+		actionBytes := []byte(action)
+		actionLen := len(actionBytes)
+
+		actionChunk := make([]byte, 0, actionLen+((actionLen+254)/255))
+		for actionLen > 0 {
+			l := min(actionLen, 255)
+			actionChunk = append(actionChunk, byte(l))
+			if actionLen == 255 {
+				actionChunk = append(actionChunk, 0)
+				break
+			}
+			actionLen -= l
+		}
+		actionChunk = append(actionChunk, actionBytes...)
+		t.ActionsRegistry = append(t.ActionsRegistry, actionChunk...)
 
 		actionID = uint32(len(t.ActionMetadata))
 
@@ -244,6 +259,38 @@ func (t *RouteTree) getOrCreateActionID(action string, actionMap map[string]uint
 		actionMap[action] = actionID
 	}
 	return actionID
+}
+
+func (t *RouteTree) GetActionName(index uint32) string {
+	regLen := uint32(len(t.ActionsRegistry))
+	if index >= regLen {
+		return ""
+	}
+
+	curr := index
+	length := uint32(0)
+
+	for {
+		l := t.ActionsRegistry[curr]
+		length += uint32(l)
+		curr++
+		if l < 255 {
+			break
+		}
+	}
+
+	start := curr
+	end := curr + length
+
+	if end > regLen || start > end {
+		return ""
+	}
+
+	b := t.ActionsRegistry[start:end]
+	if len(b) == 0 {
+		return ""
+	}
+	return unsafe.String(&b[0], len(b))
 }
 
 func (t *RouteTree) insert(url []byte, actionIndex uint32, methods uint16) {

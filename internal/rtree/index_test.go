@@ -106,7 +106,7 @@ func TestRouteTree_Search(t *testing.T) {
 
 			serviceIndex := tree.ActionMetadata[node.ActionIndex]
 			serviceID := tree.ActionMetadata[serviceIndex]
-			assert.Equal(t, tt.expectedSvc, tree.ActionsRegistry[serviceID], "Service ID mismatch")
+			assert.Equal(t, tt.expectedSvc, tree.GetActionName(serviceID), "Service ID mismatch")
 			if tt.checkMethods != 0 {
 				assert.Equal(t, tt.checkMethods, node.Methods&tt.checkMethods, "Methods bitmask mismatch")
 			}
@@ -133,7 +133,7 @@ func TestRouteTree_Compression(t *testing.T) {
 
 	serviceIndex := tree.ActionMetadata[node.ActionIndex]
 	serviceID := tree.ActionMetadata[serviceIndex]
-	assert.Equal(t, "api-svc", tree.ActionsRegistry[serviceID])
+	assert.Equal(t, "api-svc", tree.GetActionName(serviceID))
 
 	rootEdge := tree.Root['i']
 	assert.NotZero(t, rootEdge.TargetID, "Root index at 'i' should not be empty")
