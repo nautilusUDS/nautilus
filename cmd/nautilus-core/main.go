@@ -54,9 +54,12 @@ func main() {
 	os.Chmod(servicesDir, 0777)
 
 	lc := lifecycle.New()
-	
+
 	// 3. Initialize Registry and Watcher for dynamic node discovery
-	reg := registry.NewRegistry(servicesDir)
+	reg, err := registry.NewRegistry(servicesDir)
+	if err != nil {
+		log.Fatalf("Failed to initialize registry: %v", err)
+	}
 
 	manager := proxy.NewManager(reg)
 
@@ -68,11 +71,6 @@ func main() {
 	if err := cw.LoadInitial(); err != nil {
 		log.Fatalf("Failed to load initial route table: %v", err)
 	}
-
-	reg.Subscribe(func(serviceName string, nodes []string) {
-		log.Printf("Service nodes changed: %s -> %v", serviceName, nodes)
-		manager.UpdateServiceNodes(serviceName, nodes)
-	})
 
 	w, err := watcher.NewWatcher(reg)
 	if err != nil {

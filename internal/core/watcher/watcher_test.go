@@ -9,13 +9,16 @@ import (
 )
 
 func TestWatcher_Basic(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "nibble-watcher-test-*")
+	tmpDir, err := os.MkdirTemp("", "nautilus-watcher-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	reg := registry.NewRegistry(tmpDir)
+	reg, err := registry.NewRegistry(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create registry: %v", err)
+	}
 
 	w, err := NewWatcher(reg)
 	if err != nil {
@@ -29,15 +32,14 @@ func TestWatcher_Basic(t *testing.T) {
 		t.Fatalf("failed to start watcher: %v", err)
 	}
 
-	// Add a socket and trigger manual scan via event signal or just wait for ticker
 	// For simplicity in unit test, we verify that Start() didn't crash and initialized the registry.
-	if reg.BaseDir() != tmpDir {
-		t.Errorf("expected base dir %s, got %s", tmpDir, reg.BaseDir())
+	if reg.BaseDir() != filepath.ToSlash(tmpDir) {
+		t.Errorf("expected base dir %s, got %s", filepath.ToSlash(tmpDir), reg.BaseDir())
 	}
 }
 
 func TestWatcher_ScanOnStart(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "nibble-watcher-start-*")
+	tmpDir, err := os.MkdirTemp("", "nautilus-watcher-start-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
@@ -48,7 +50,10 @@ func TestWatcher_ScanOnStart(t *testing.T) {
 	os.MkdirAll(svcDir, 0755)
 	os.WriteFile(filepath.Join(svcDir, "1.sock"), []byte(""), 0644)
 
-	reg := registry.NewRegistry(tmpDir)
+	reg, err := registry.NewRegistry(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create registry: %v", err)
+	}
 
 	w, err := NewWatcher(reg)
 	if err != nil {

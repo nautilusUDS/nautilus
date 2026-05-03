@@ -5,7 +5,6 @@ import (
 	"nautilus/internal/core/builtins"
 	"nautilus/internal/core/builtins/builtinsmware"
 	"nautilus/internal/core/builtins/virtualservices"
-	"nautilus/internal/core/forwarder"
 	"nautilus/internal/core/metrics"
 	"nautilus/internal/core/registry"
 	"nautilus/internal/interpolate"
@@ -36,22 +35,15 @@ func (rs *responseState) Write(b []byte) (int, error) {
 
 type Manager struct {
 	Tree     atomic.Pointer[rtree.RouteTree]
-	NodeLock sync.RWMutex
-	Nodes    map[string][]string
-	Indices  map[string]*uint32
 	Registry *registry.Registry
 
 	builtinCache sync.Map // map[string]http.HandlerFunc
 	virtualCache sync.Map // map[string]http.HandlerFunc
-	Forwarder    *forwarder.Forwarder
 }
 
 func NewManager(reg *registry.Registry) *Manager {
 	m := &Manager{
-		Nodes:     make(map[string][]string),
-		Indices:   make(map[string]*uint32),
-		Registry:  reg,
-		Forwarder: forwarder.NewForwarder(reg.OnFailure),
+		Registry: reg,
 	}
 	m.Tree.Store(&rtree.RouteTree{})
 	return m
@@ -59,36 +51,6 @@ func NewManager(reg *registry.Registry) *Manager {
 
 func (m *Manager) UpdateTree(newTree *rtree.RouteTree) {
 	m.Tree.Store(newTree)
-	metrics.Global.IncUpdates()
-}
-
-func (m *Manager) UpdateNodes(nodes map[string][]string) {
-	m.NodeLock.Lock()
-	defer m.NodeLock.Unlock()
-
-	m.Nodes = nodes
-	for svc := range nodes {
-		if _, exists := m.Indices[svc]; !exists {
-			var i uint32
-			m.Indices[svc] = &i
-		}
-	}
-	metrics.Global.IncUpdates()
-}
-
-func (m *Manager) UpdateServiceNodes(serviceName string, nodes []string) {
-	m.NodeLock.Lock()
-	defer m.NodeLock.Unlock()
-
-	if len(nodes) == 0 {
-		delete(m.Nodes, serviceName)
-	} else {
-		m.Nodes[serviceName] = nodes
-		if _, exists := m.Indices[serviceName]; !exists {
-			var i uint32
-			m.Indices[serviceName] = &i
-		}
-	}
 	metrics.Global.IncUpdates()
 }
 
@@ -224,9 +186,16 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		} else {
-			// External middleware (usually over UDS)
+			mw, err := m.Registry.GetForwarder(mwExpr)
+			if err != nil {
+				http.Error(trackedWriter, "Middleware Node Not Found", http.StatusBadGateway)
+				return
+			}
+
 			resp := builtinsmware.NewResponseWriter()
-			if !m.Forwarder.ForwardMiddleware(resp, r, r.URL.Path, mwExpr) {
+			// External middleware (usually over UDS)
+
+			if !mw.ForwardMiddleware(resp, r, "") {
 				// If forwarding fails or is intercepted, stop execution
 				resp.WriteTo(trackedWriter)
 				return
@@ -259,22 +228,12 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 5. Load Balancing (Protected by RLock)
-	m.NodeLock.RLock()
-	availableNodes, serviceExists := m.Nodes[finalServiceName]
-	roundRobinIndex := m.Indices[finalServiceName]
-	m.NodeLock.RUnlock()
-
-	if !serviceExists || len(availableNodes) == 0 {
-		log.Printf("[Warn] No healthy upstream nodes available for service: %s", finalServiceName)
-		metrics.Global.IncErrors()
+	service, err := m.Registry.GetForwarder(finalServiceName)
+	if err != nil {
 		http.Error(trackedWriter, "Service Unavailable", http.StatusServiceUnavailable)
 		return
 	}
-
-	nextIdx := atomic.AddUint32(roundRobinIndex, 1) % uint32(len(availableNodes))
-	targetNode := availableNodes[nextIdx]
-	// 6. Final Backend Forwarding
-	m.Forwarder.Forward(trackedWriter, r, finalServiceName, targetNode)
+	service.Forward(w, r)
 }
 
 func (m *Manager) StartUDSListener(socketPath string) error {

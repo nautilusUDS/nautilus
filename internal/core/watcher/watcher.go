@@ -16,9 +16,9 @@ import (
 type Watcher struct {
 	registry *registry.Registry
 
-	mu          sync.Mutex
-	activeScan  bool
-	lastChange  time.Time
+	dirtyServices map[string]struct{}
+	dirtyMu       sync.Mutex
+
 	eventSignal chan struct{}
 	cancel      context.CancelFunc
 	fsWatcher   *fsnotify.Watcher
@@ -31,9 +31,10 @@ func NewWatcher(r *registry.Registry) (*Watcher, error) {
 	}
 
 	watcher := &Watcher{
-		registry:    r,
-		eventSignal: make(chan struct{}, 1),
-		fsWatcher:   fw,
+		registry:      r,
+		dirtyServices: make(map[string]struct{}),
+		eventSignal:   make(chan struct{}, 1),
+		fsWatcher:     fw,
 	}
 
 	return watcher, nil
@@ -54,34 +55,26 @@ func (w *Watcher) addRecursive(root string) error {
 
 func (w *Watcher) Start() error {
 	// Initial Scan
-	if _, err := w.registry.Scan(); err != nil {
+	if err := w.registry.Scan(""); err != nil {
 		return err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	w.cancel = cancel
 
-	// Start Event Listener
 	go w.listenEvents(ctx)
+	go w.runWorkerLoop(ctx)
 
-	// Start Hybrid Controller
-	go w.runHybridLoop(ctx)
-
-	// Add base directory to fsnotify
 	root := w.registry.BaseDir()
 	if err := w.addRecursive(root); err != nil {
 		return err
 	}
 
-	if _, err := w.registry.Scan(); err != nil {
-		log.Printf("Initial scan error: %v", err)
-	}
-
-	log.Println("Hybrid Watcher started (Events + Dynamic Ticker)")
 	return nil
 }
 
 func (w *Watcher) listenEvents(ctx context.Context) {
+	baseDir := w.registry.BaseDir()
 	for {
 		select {
 		case <-ctx.Done():
@@ -91,22 +84,33 @@ func (w *Watcher) listenEvents(ctx context.Context) {
 				return
 			}
 
-			log.Println("fsnotify event:", event)
-
 			if event.Has(fsnotify.Create) {
 				info, err := os.Stat(event.Name)
 				if err == nil && info.IsDir() {
 					w.addRecursive(event.Name)
 				}
 			}
+			switch event.Op {
+			case fsnotify.Create, fsnotify.Write, fsnotify.Remove, fsnotify.Rename:
+				relPath, err := filepath.Rel(baseDir, event.Name)
+				if err != nil {
+					log.Printf("[ERR] failed to get relative path: %v", err)
+					continue
+				}
 
-			if event.Has(fsnotify.Create) || event.Has(fsnotify.Write) ||
-				event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
-				select {
-				case w.eventSignal <- struct{}{}:
-				default:
+				serviceName := filepath.Dir(relPath)
+				if serviceName != "" && serviceName != "." {
+					w.dirtyMu.Lock()
+					w.dirtyServices[serviceName] = struct{}{}
+					w.dirtyMu.Unlock()
+
+					select {
+					case w.eventSignal <- struct{}{}:
+					default:
+					}
 				}
 			}
+
 		case err, ok := <-w.fsWatcher.Errors:
 			if !ok {
 				return
@@ -116,12 +120,9 @@ func (w *Watcher) listenEvents(ctx context.Context) {
 	}
 }
 
-func (w *Watcher) runHybridLoop(ctx context.Context) {
-	var ticker *time.Ticker
+func (w *Watcher) runWorkerLoop(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
 	var tickerChan <-chan time.Time
-
-	idleTimeout := 30 * time.Second
-	scanInterval := 1 * time.Second
 
 	for {
 		select {
@@ -130,38 +131,23 @@ func (w *Watcher) runHybridLoop(ctx context.Context) {
 				ticker.Stop()
 			}
 			return
-
 		case <-w.eventSignal:
-			w.mu.Lock()
-			w.lastChange = time.Now()
-			if !w.activeScan {
-				log.Println("Activity detected, entering high-frequency scan mode...")
-				w.activeScan = true
-				ticker = time.NewTicker(scanInterval)
-				tickerChan = ticker.C
+			w.dirtyMu.Lock()
+			toScan := make(map[string]struct{})
+			for svc := range w.dirtyServices {
+				toScan[svc] = struct{}{}
 			}
-			w.mu.Unlock()
+			w.dirtyServices = make(map[string]struct{})
+			w.dirtyMu.Unlock()
 
+			for svcName := range toScan {
+				w.registry.Scan(svcName)
+				log.Printf("Targeted scan completed for: %s", svcName)
+			}
 		case <-tickerChan:
-			changed, err := w.registry.Scan()
-			if err != nil {
-				log.Println("scan error:", err)
+			if err := w.registry.Scan(""); err != nil {
+				log.Println("[ERR] error scanning registry", err)
 			}
-
-			w.mu.Lock()
-			if changed {
-				w.lastChange = time.Now()
-			}
-
-			// Check for idleness
-			if time.Since(w.lastChange) > idleTimeout {
-				log.Println("No changes for 30s, entering idle mode (Events only)...")
-				w.activeScan = false
-				ticker.Stop()
-				ticker = nil
-				tickerChan = nil
-			}
-			w.mu.Unlock()
 		}
 	}
 }
