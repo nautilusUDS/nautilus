@@ -28,7 +28,7 @@ func TestFullWildcardHost(t *testing.T) {
 	if exists {
 		serviceIndex := tree.ActionMetadata[node.ActionIndex]
 		serviceID := tree.ActionMetadata[serviceIndex]
-		assert.Equal(t, "all-hosts-service", tree.ActionsRegistry[serviceID])
+		assert.Equal(t, "all-hosts-service", tree.GetActionName(serviceID))
 	}
 
 	url2 := "other.io/api/test"
@@ -39,6 +39,6 @@ func TestFullWildcardHost(t *testing.T) {
 	if exists2 {
 		serviceIndex := tree.ActionMetadata[node2.ActionIndex]
 		serviceID := tree.ActionMetadata[serviceIndex]
-		assert.Equal(t, "all-hosts-service", tree.ActionsRegistry[serviceID])
+		assert.Equal(t, "all-hosts-service", tree.GetActionName(serviceID))
 	}
 }

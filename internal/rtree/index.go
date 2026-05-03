@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"unsafe"
 )
 
 const (
@@ -48,7 +49,7 @@ type Edge struct {
 type RouteTree struct {
 	Root            [256]Edge // Entry points indexed by the first character
 	FragmentPool    []byte    // Contiguous memory for all path fragments
-	ActionsRegistry []string  // Registry of middleware & service identifiers
+	ActionsRegistry []byte    // Registry of middleware & service identifiers
 	ActionMetadata  []uint32
 	NodePool        []RouteNode // Flattened node storage for cache locality
 }
@@ -97,6 +98,7 @@ func (t *RouteTree) Search(url []byte) (*RouteNode, bool) {
 		node := &t.NodePool[currentEdge.TargetID]
 		fStart, fEnd := currentEdge.Offset, currentEdge.End
 		fLen := int(fEnd - fStart)
+		matched := false
 
 		// Handle Wildcard Fragment
 		if t.FragmentPool[fStart] == '*' {
@@ -116,55 +118,60 @@ func (t *RouteTree) Search(url []byte) (*RouteNode, bool) {
 					continue
 				}
 			}
-			goto ATTEMPT_BACKTRACK
+		} else {
+
+			// Handle Static Fragment matching
+			if urlIdx+fLen <= urlLen && bytes.Equal(url[urlIdx:urlIdx+fLen], t.FragmentPool[fStart:fEnd]) {
+				urlIdx += fLen
+
+				if urlIdx == urlLen {
+					if node.Methods != 0 {
+						return node, true
+					}
+				} else {
+
+					nextChar := url[urlIdx]
+					var exactMatch *Edge
+					var wildcardMatch *Edge
+
+					for i := range node.Edges {
+						e := &node.Edges[i]
+						switch t.FragmentPool[e.Offset] {
+						case nextChar:
+							exactMatch = e
+						case '*':
+							wildcardMatch = e
+						}
+					}
+
+					if exactMatch != nil {
+						if wildcardMatch != nil {
+							stack = append(stack, backtrackState{edge: wildcardMatch, urlIdx: urlIdx})
+						}
+						currentEdge = exactMatch
+						matched = true
+					} else if wildcardMatch != nil {
+						currentEdge = wildcardMatch
+						matched = true
+					}
+
+				}
+
+			}
+
 		}
 
-		// Handle Static Fragment matching
-		if urlIdx+fLen <= urlLen && bytes.Equal(url[urlIdx:urlIdx+fLen], t.FragmentPool[fStart:fEnd]) {
-			urlIdx += fLen
-
-			if urlIdx == urlLen {
-				if node.Methods != 0 {
-					return node, true
-				}
-				goto ATTEMPT_BACKTRACK
-			}
-
-			nextChar := url[urlIdx]
-			var exactMatch *Edge
-			var wildcardMatch *Edge
-
-			for i := range node.Edges {
-				e := &node.Edges[i]
-				switch t.FragmentPool[e.Offset] {
-				case nextChar:
-					exactMatch = e
-				case '*':
-					wildcardMatch = e
-				}
-			}
-
-			if exactMatch != nil {
-				if wildcardMatch != nil {
-					stack = append(stack, backtrackState{edge: wildcardMatch, urlIdx: urlIdx})
-				}
-				currentEdge = exactMatch
+		if !matched {
+			if len(stack) > 0 {
+				last := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				currentEdge = last.edge
+				urlIdx = last.urlIdx
 				continue
-			} else if wildcardMatch != nil {
-				currentEdge = wildcardMatch
-				continue
 			}
+			break
 		}
 
-	ATTEMPT_BACKTRACK:
-		if len(stack) > 0 {
-			last := stack[len(stack)-1]
-			stack = stack[:len(stack)-1]
-			currentEdge = last.edge
-			urlIdx = last.urlIdx
-			continue
-		}
-		break
 	}
 
 	return nil, false
@@ -228,7 +235,21 @@ func (t *RouteTree) getOrCreateActionID(action string, actionMap map[string]uint
 	actionID, exists := actionMap[action]
 	if !exists {
 		id := uint32(len(t.ActionsRegistry))
-		t.ActionsRegistry = append(t.ActionsRegistry, action)
+		actionBytes := []byte(action)
+		actionLen := len(actionBytes)
+
+		actionChunk := make([]byte, 0, actionLen+((actionLen+254)/255))
+		for actionLen > 0 {
+			l := min(actionLen, 255)
+			actionChunk = append(actionChunk, byte(l))
+			if actionLen == 255 {
+				actionChunk = append(actionChunk, 0)
+				break
+			}
+			actionLen -= l
+		}
+		actionChunk = append(actionChunk, actionBytes...)
+		t.ActionsRegistry = append(t.ActionsRegistry, actionChunk...)
 
 		actionID = uint32(len(t.ActionMetadata))
 
@@ -244,6 +265,38 @@ func (t *RouteTree) getOrCreateActionID(action string, actionMap map[string]uint
 		actionMap[action] = actionID
 	}
 	return actionID
+}
+
+func (t *RouteTree) GetActionName(index uint32) string {
+	regLen := uint32(len(t.ActionsRegistry))
+	if index >= regLen {
+		return ""
+	}
+
+	curr := index
+	length := uint32(0)
+
+	for {
+		l := t.ActionsRegistry[curr]
+		length += uint32(l)
+		curr++
+		if l < 255 {
+			break
+		}
+	}
+
+	start := curr
+	end := curr + length
+
+	if end > regLen || start > end {
+		return ""
+	}
+
+	b := t.ActionsRegistry[start:end]
+	if len(b) == 0 {
+		return ""
+	}
+	return unsafe.String(&b[0], len(b))
 }
 
 func (t *RouteTree) insert(url []byte, actionIndex uint32, methods uint16) {

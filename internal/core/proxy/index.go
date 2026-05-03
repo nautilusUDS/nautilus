@@ -145,7 +145,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	serviceMetadataIndex := tree.ActionMetadata[node.ActionIndex]
 	targetServiceID := tree.ActionMetadata[serviceMetadataIndex]
-	rawServiceName := tree.ActionsRegistry[targetServiceID]
+	rawServiceName := tree.GetActionName(targetServiceID)
 
 	mwCount := tree.ActionMetadata[node.ActionIndex+1]
 	resolvedMiddlewares := make([]string, mwCount)
@@ -154,7 +154,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		baseOffset := node.ActionIndex + 2
 		for i := range mwCount {
 			mwMetaIndex := tree.ActionMetadata[baseOffset+i]
-			rawMwName := tree.ActionsRegistry[tree.ActionMetadata[mwMetaIndex]]
+			rawMwName := tree.GetActionName(tree.ActionMetadata[mwMetaIndex])
 
 			opLen := tree.ActionMetadata[mwMetaIndex+1]
 			if opLen > 0 {
