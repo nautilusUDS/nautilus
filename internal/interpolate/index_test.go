@@ -55,8 +55,16 @@ func TestAnalyze(t *testing.T) {
 			},
 		},
 		{
-			name:  "No tags",
-			input: "plain text",
+			name:  "Path and RawURI",
+			input: "{path} {rawuri}",
+			expected: []uint32{
+				interpolate.OpPath, 0, 6,
+				interpolate.OpRawURI, 7, 15,
+			},
+		},
+		{
+			name:     "No tags",
+			input:    "plain text",
 			expected: []uint32{},
 		},
 	}
