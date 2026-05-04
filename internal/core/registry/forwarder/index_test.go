@@ -39,7 +39,7 @@ func TestForwarder_Forward(t *testing.T) {
 
 	// 2. Use Forwarder to send request to UDS
 	onFailure := make(chan FailureForwarder, 1)
-	f := New(socketPath, onFailure)
+	f := New("test-service", socketPath, onFailure)
 
 	req := httptest.NewRequest("GET", "http://example.com/api/test", nil)
 	w := httptest.NewRecorder()
@@ -79,7 +79,7 @@ func TestForwarder_ForwardMiddleware(t *testing.T) {
 	defer server.Shutdown(context.Background())
 
 	onFailure := make(chan FailureForwarder, 1)
-	f := New(socketPath, onFailure)
+	f := New("test-service", socketPath, onFailure)
 
 	t.Run("Authorized", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "http://example.com/", nil)
@@ -113,7 +113,7 @@ func TestForwarder_FailureReporting(t *testing.T) {
 	socketPath := filepath.Join(tmpDir, "nonexistent.sock")
 
 	onFailure := make(chan FailureForwarder, 1)
-	f := New(socketPath, onFailure)
+	f := New("test-service", socketPath, onFailure)
 
 	t.Run("Forward Failure", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "http://example.com/", nil)

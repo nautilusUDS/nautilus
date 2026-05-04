@@ -2,6 +2,7 @@ package registry
 
 import (
 	"nautilus/internal/core/logs"
+	"nautilus/internal/core/metrics"
 	"nautilus/internal/core/registry/forwarder"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -58,6 +60,14 @@ func (r *Registry) BaseDir() string {
 func (r *Registry) listenFailures() {
 	for failure := range r.failureChan {
 		logs.Out.Error("Node failure detected", zap.String("socketPath", failure.SocketPath), zap.Error(failure.Error))
+
+		r.mu.RLock()
+		ctx, ok := r.nodeMap[failure.SocketPath]
+		if ok {
+			metrics.Global.NodeFailuresTotal.WithLabelValues(ctx.serviceName, failure.SocketPath).Inc()
+		}
+		r.mu.RUnlock()
+
 		r.RemoveNode(failure.SocketPath, true)
 	}
 }
@@ -111,6 +121,11 @@ func (r *Registry) GetForwarder(serviceName string) (*forwarder.Forwarder, error
 // Scan satisfies the Watcher's expectation. It performs either a full scan
 // or a targeted scan based on the provided target string.
 func (r *Registry) Scan(target string) error {
+	start := time.Now()
+	defer func() {
+		metrics.Global.RegistryScanDuration.Observe(time.Since(start).Seconds())
+	}()
+
 	// If target is empty or matches baseDir, perform full scan
 	if target == "" || target == r.baseDir {
 		return r.fullScan()
@@ -164,7 +179,7 @@ func (r *Registry) fullScan() error {
 			if _, exists := r.nodeMap[node]; !exists {
 				r.nodeMap[node] = &nodeContext{
 					serviceName: svcName,
-					forwarder:   forwarder.New(node, r.failureChan),
+					forwarder:   forwarder.New(svcName, node, r.failureChan),
 				}
 			}
 		}
@@ -174,6 +189,7 @@ func (r *Registry) fullScan() error {
 		} else {
 			r.services[svcName] = &ServiceSet{nodes: nodes}
 		}
+		metrics.Global.ServiceNodesActive.WithLabelValues(svcName).Set(float64(len(nodes)))
 	}
 
 	return nil
@@ -214,6 +230,7 @@ func (r *Registry) ScanService(serviceName string) error {
 	// 2. Identify and add new nodes
 	if len(discoveredNodes) == 0 {
 		delete(r.services, serviceName)
+		metrics.Global.ServiceNodesActive.WithLabelValues(serviceName).Set(0)
 		return nil
 	}
 
@@ -221,7 +238,7 @@ func (r *Registry) ScanService(serviceName string) error {
 		if _, exists := r.nodeMap[newNode]; !exists {
 			r.nodeMap[newNode] = &nodeContext{
 				serviceName: serviceName,
-				forwarder:   forwarder.New(newNode, r.failureChan),
+				forwarder:   forwarder.New(serviceName, newNode, r.failureChan),
 			}
 		}
 	}
@@ -232,6 +249,7 @@ func (r *Registry) ScanService(serviceName string) error {
 	} else {
 		r.services[serviceName].nodes = discoveredNodes
 	}
+	metrics.Global.ServiceNodesActive.WithLabelValues(serviceName).Set(float64(len(discoveredNodes)))
 
 	return nil
 }
@@ -258,6 +276,7 @@ func (r *Registry) removeNodeUnsafe(nodePath string, shouldDeleteFile bool) {
 				break
 			}
 		}
+		metrics.Global.ServiceNodesActive.WithLabelValues(serviceName).Set(float64(len(ss.nodes)))
 		if len(ss.nodes) == 0 {
 			delete(r.services, serviceName)
 		}
