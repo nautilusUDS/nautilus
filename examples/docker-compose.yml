@@ -5,10 +5,9 @@ services:
       dockerfile: docker/Dockerfile
     volumes:
       - nautilus-sockets:/var/run/nautilus
-      - ./nautilus.ntl.example:/etc/nautilus/nautilus.ntl
+      - ./Ntlfile.example:/etc/nautilus/Ntlfile
     environment:
-      - NAUTILUS_CONFIG=/etc/nautilus/nautilus.ntl
-      - NAUTILUS_ENTRYPOINT_COUNT=1
+      - NAUTILUS_CONFIG=/etc/nautilus/Ntlfile
     restart: always
 
   backend-service:

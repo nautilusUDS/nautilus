@@ -22,7 +22,12 @@ func main() {
 		servicesDir = "/var/run/nautilus/services"
 	}
 
-	socketPath := filepath.Join(servicesDir, serviceName+".sock")
+	socketDir := filepath.Join(servicesDir, serviceName)
+	if err := os.MkdirAll(socketDir, 0700); err != nil {
+		log.Fatalf("Failed to create socket directory: %v", err)
+	}
+
+	socketPath := filepath.Join(servicesDir, serviceName, "node-0.sock")
 
 	// Cleanup old socket
 	if _, err := os.Stat(socketPath); err == nil {
