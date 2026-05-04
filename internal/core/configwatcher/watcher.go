@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"nautilus/internal/core/logs"
+	"nautilus/internal/core/metrics"
 	"nautilus/internal/core/proxy"
 	"nautilus/internal/rtree"
 	"os"
@@ -111,6 +112,7 @@ func (cw *ConfigWatcher) listen() {
 }
 
 func (cw *ConfigWatcher) reload() {
+	start := time.Now()
 	var newTree *rtree.RouteTree
 	var err error
 
@@ -122,10 +124,12 @@ func (cw *ConfigWatcher) reload() {
 
 	if err != nil {
 		logs.Out.Error("Error reloading route table", zap.Error(err))
+		metrics.Global.ConfigErrorsTotal.WithLabelValues("reload").Inc()
 		return
 	}
 
 	cw.manager.UpdateTree(newTree)
+	metrics.Global.ConfigReloadDuration.Observe(time.Since(start).Seconds())
 	logs.Out.Info("Route table reloaded and updated")
 }
 
@@ -139,6 +143,7 @@ func (cw *ConfigWatcher) loadStatic() (*rtree.RouteTree, error) {
 	var tree rtree.RouteTree
 	dec := gob.NewDecoder(file)
 	if err := dec.Decode(&tree); err != nil {
+		metrics.Global.ConfigErrorsTotal.WithLabelValues("decode").Inc()
 		return nil, err
 	}
 	return &tree, nil
@@ -158,6 +163,7 @@ func (cw *ConfigWatcher) compileAndLoad() (*rtree.RouteTree, error) {
 	}
 
 	if err := cmd.Start(); err != nil {
+		metrics.Global.ConfigErrorsTotal.WithLabelValues("compile_start").Inc()
 		return nil, err
 	}
 
@@ -167,10 +173,12 @@ func (cw *ConfigWatcher) compileAndLoad() (*rtree.RouteTree, error) {
 
 	slurp, _ := io.ReadAll(stderr)
 	if err := cmd.Wait(); err != nil {
+		metrics.Global.ConfigErrorsTotal.WithLabelValues("compile_fail").Inc()
 		return nil, fmt.Errorf("ntlc failed: %v, stderr: %s", err, string(slurp))
 	}
 
 	if decodeErr != nil {
+		metrics.Global.ConfigErrorsTotal.WithLabelValues("decode").Inc()
 		return nil, fmt.Errorf("decode compiled data failed: %v", decodeErr)
 	}
 
