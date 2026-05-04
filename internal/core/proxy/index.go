@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"fmt"
 	"nautilus/internal/core/builtins"
 	"nautilus/internal/core/builtins/builtinsmware"
 	"nautilus/internal/core/builtins/virtualservices"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -25,20 +27,30 @@ const (
 	ErrServiceUnav = "Service Unavailable"
 )
 
-// responseState wraps http.ResponseWriter to track if a response has been initiated.
+// responseState wraps http.ResponseWriter to track activity, status code, and response size.
 type responseState struct {
 	http.ResponseWriter
 	wroteHeader bool
+	status      int
+	size        int64
 }
 
 func (rs *responseState) WriteHeader(code int) {
+	if rs.wroteHeader {
+		return
+	}
 	rs.wroteHeader = true
+	rs.status = code
 	rs.ResponseWriter.WriteHeader(code)
 }
 
 func (rs *responseState) Write(b []byte) (int, error) {
-	rs.wroteHeader = true
-	return rs.ResponseWriter.Write(b)
+	if !rs.wroteHeader {
+		rs.WriteHeader(http.StatusOK)
+	}
+	n, err := rs.ResponseWriter.Write(b)
+	rs.size += int64(n)
+	return n, err
 }
 
 type Manager struct {
@@ -139,9 +151,29 @@ func (m *Manager) resolveVirtualService(expr string) http.HandlerFunc {
 }
 
 func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	metrics.Global.IncRequests()
 	metrics.Global.AddActive(1)
 	defer metrics.Global.AddActive(-1)
+
+	// Wrap ResponseWriter to track activity, status, and size
+	trackedWriter := &responseState{ResponseWriter: w, status: http.StatusOK}
+
+	var finalServiceName string
+	var routePattern string
+
+	defer func() {
+		duration := time.Since(start).Seconds()
+		statusStr := fmt.Sprintf("%d", trackedWriter.status)
+
+		metrics.Global.RequestDuration.WithLabelValues(r.Method, routePattern).Observe(duration)
+		metrics.Global.HTTPRequestsTotal.WithLabelValues(finalServiceName, statusStr, r.Method).Inc()
+		metrics.Global.ResponseBytesTotal.WithLabelValues(finalServiceName).Add(float64(trackedWriter.size))
+
+		if r.ContentLength > 0 {
+			metrics.Global.RequestBytesTotal.WithLabelValues(finalServiceName).Add(float64(r.ContentLength))
+		}
+	}()
 
 	tree := m.Tree.Load()
 
@@ -154,9 +186,11 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	lookupPath := host + r.URL.Path
 	node, exists := tree.Search(rtree.ReverseHost(lookupPath))
 	if !exists {
-		http.Error(w, "Resource Not Found", http.StatusNotFound)
+		routePattern = "404"
+		http.Error(trackedWriter, "Resource Not Found", http.StatusNotFound)
 		return
 	}
+	routePattern = lookupPath // Simplified for now, could be node.Pattern if available
 
 	// 2. Method Validation
 	methodBit := rtree.HTTPMethodMap[r.Method]
@@ -164,12 +198,10 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		methodBit = rtree.MethodAny
 	}
 	if node.Methods&methodBit == 0 {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		http.Error(trackedWriter, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Wrap ResponseWriter to track activity
-	trackedWriter := &responseState{ResponseWriter: w}
 	interpolator := interpolate.New(r)
 
 	serviceMetadataIndex := tree.ActionMetadata[node.ActionIndex]
@@ -246,7 +278,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	finalServiceName := rawServiceName
+	finalServiceName = rawServiceName
 	if opCount := tree.ActionMetadata[serviceMetadataIndex+1]; opCount > 0 {
 		offset := serviceMetadataIndex + 2
 		ops := tree.ActionMetadata[offset : offset+opCount]
@@ -271,7 +303,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(trackedWriter, ErrServiceUnav, http.StatusServiceUnavailable)
 		return
 	}
-	service.Forward(w, r)
+	service.Forward(trackedWriter, r)
 }
 
 func (m *Manager) StartUDSListener(socketPath string) error {
