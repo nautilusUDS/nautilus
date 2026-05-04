@@ -2,15 +2,16 @@ package watcher
 
 import (
 	"context"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"nautilus/internal/core/logs"
 	"nautilus/internal/core/registry"
 
 	"github.com/fsnotify/fsnotify"
+	"go.uber.org/zap"
 )
 
 type Watcher struct {
@@ -46,7 +47,7 @@ func (w *Watcher) addRecursive(root string) error {
 			return err
 		}
 		if d.IsDir() {
-			log.Printf("Watching directory: %s", path)
+			logs.Out.Info("Watching directory", zap.String("path", path))
 			return w.fsWatcher.Add(path)
 		}
 		return nil
@@ -94,7 +95,7 @@ func (w *Watcher) listenEvents(ctx context.Context) {
 			case fsnotify.Create, fsnotify.Write, fsnotify.Remove, fsnotify.Rename:
 				relPath, err := filepath.Rel(baseDir, event.Name)
 				if err != nil {
-					log.Printf("[ERR] failed to get relative path: %v", err)
+					logs.Out.Error("failed to get relative path", zap.Error(err))
 					continue
 				}
 
@@ -115,7 +116,7 @@ func (w *Watcher) listenEvents(ctx context.Context) {
 			if !ok {
 				return
 			}
-			log.Println("fsnotify error:", err)
+			logs.Out.Error("fsnotify error", zap.Error(err))
 		}
 	}
 }
@@ -142,11 +143,11 @@ func (w *Watcher) runWorkerLoop(ctx context.Context) {
 
 			for svcName := range toScan {
 				w.registry.Scan(svcName)
-				log.Printf("Targeted scan completed for: %s", svcName)
+				logs.Out.Info("Targeted scan completed", zap.String("service", svcName))
 			}
 		case <-tickerChan:
 			if err := w.registry.Scan(""); err != nil {
-				log.Println("[ERR] error scanning registry", err)
+				logs.Out.Error("error scanning registry", zap.Error(err))
 			}
 		}
 	}

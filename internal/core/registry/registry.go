@@ -1,7 +1,7 @@
 package registry
 
 import (
-	"log"
+	"nautilus/internal/core/logs"
 	"nautilus/internal/core/registry/forwarder"
 	"os"
 	"path/filepath"
@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"go.uber.org/zap"
 )
 
 type Registry struct {
@@ -55,7 +57,7 @@ func (r *Registry) BaseDir() string {
 
 func (r *Registry) listenFailures() {
 	for failure := range r.failureChan {
-		log.Printf("[Registry] Node failure detected: %s, error: %v", failure.SocketPath, failure.Error)
+		logs.Out.Error("Node failure detected", zap.String("socketPath", failure.SocketPath), zap.Error(failure.Error))
 		r.RemoveNode(failure.SocketPath, true)
 	}
 }

@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"log"
+	"nautilus/internal/core/logs"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 type MiddlewareFactory func(args ...string) HandlerFunc
@@ -146,12 +148,12 @@ func BasicAuth(args ...string) HandlerFunc {
 
 func IPAllow(args ...string) HandlerFunc {
 	if len(args) != 1 {
-		log.Printf("IPAllow error: expected 1 argument")
+		logs.Out.Error("IPAllow error: expected 1 argument")
 		return InvalidMiddleware
 	}
 	_, ipNet, err := net.ParseCIDR(args[0])
 	if err != nil {
-		log.Printf("IPAllow error: invalid CIDR %s", args)
+		logs.Out.Error("IPAllow error: invalid CIDR", zap.Error(err))
 		return InvalidMiddleware
 	}
 	return func(w *ResponseWriter, r *http.Request) {

@@ -4,7 +4,7 @@ import (
 	"encoding/gob"
 	"fmt"
 	"io"
-	"log"
+	"nautilus/internal/core/logs"
 	"nautilus/internal/core/proxy"
 	"nautilus/internal/rtree"
 	"os"
@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"go.uber.org/zap"
 )
 
 type ConfigWatcher struct {
@@ -72,7 +73,7 @@ func (cw *ConfigWatcher) Start() error {
 	}
 
 	go cw.listen()
-	log.Printf("Config Watcher started for: %s/%s", cw.configDirectory, cw.configFileName)
+	logs.Out.Info("Config watcher started", zap.String("path", cw.fullConfigPath))
 	return nil
 }
 
@@ -91,7 +92,7 @@ func (cw *ConfigWatcher) listen() {
 			}
 
 			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) || event.Has(fsnotify.Rename) {
-				log.Printf("Config file change detected: %v", event.Op)
+				logs.Out.Info("Config file change detected", zap.String("path", event.Name))
 
 				if timer != nil {
 					timer.Stop()
@@ -104,7 +105,7 @@ func (cw *ConfigWatcher) listen() {
 			if !ok {
 				return
 			}
-			log.Printf("Config watcher error: %v", err)
+			logs.Out.Error("Config watcher error", zap.Error(err))
 		}
 	}
 }
@@ -120,12 +121,12 @@ func (cw *ConfigWatcher) reload() {
 	}
 
 	if err != nil {
-		log.Printf("Error reloading route table: %v", err)
+		logs.Out.Error("Error reloading route table", zap.Error(err))
 		return
 	}
 
 	cw.manager.UpdateTree(newTree)
-	log.Println("Successfully reloaded and updated route table")
+	logs.Out.Info("Route table reloaded and updated")
 }
 
 func (cw *ConfigWatcher) loadStatic() (*rtree.RouteTree, error) {

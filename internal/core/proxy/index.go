@@ -1,10 +1,10 @@
 package proxy
 
 import (
-	"log"
 	"nautilus/internal/core/builtins"
 	"nautilus/internal/core/builtins/builtinsmware"
 	"nautilus/internal/core/builtins/virtualservices"
+	"nautilus/internal/core/logs"
 	"nautilus/internal/core/metrics"
 	"nautilus/internal/core/registry"
 	"nautilus/internal/interpolate"
@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"go.uber.org/zap"
 )
 
 // responseState wraps http.ResponseWriter to track if a response has been initiated.
@@ -181,7 +183,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				isHandled = true
 			} else {
-				log.Printf("[Error] Failed to resolve built-in middleware: %s", mwExpr)
+				logs.Out.Error("Failed to resolve built-in middleware", zap.String("middleware", mwExpr))
 				http.Error(trackedWriter, "Internal Middleware Error", http.StatusInternalServerError)
 				return
 			}
@@ -222,7 +224,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			handler(trackedWriter, r)
 			return
 		}
-		log.Printf("[Error] Virtual service handler not found: %s", finalServiceName)
+		logs.Out.Error("Failed to resolve virtual service", zap.String("virtualService", finalServiceName))
 		http.Error(trackedWriter, "Unknown Virtual Service: "+finalServiceName, http.StatusInternalServerError)
 		return
 	}
@@ -249,6 +251,6 @@ func (m *Manager) StartUDSListener(socketPath string) error {
 	if err := os.Chmod(socketPath, 0666); err != nil {
 		return err
 	}
-	log.Printf("Nautilus Core listening on UDS: %s", socketPath)
+	logs.Out.Info("Nautilus Core listening on UDS", zap.String("socketPath", socketPath))
 	return http.Serve(listener, m)
 }
