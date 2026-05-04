@@ -35,8 +35,9 @@ func main() {
 	}
 	defer os.Remove(socketPath)
 
-	// Ensure permissions for core to access
-	os.Chmod(socketPath, 0666)
+	// Ensure permissions for core to access via ACL
+	// We use 0700 here; the directory's Default ACL will handle Nautilus access.
+	os.Chmod(socketPath, 0700)
 
 	log.Printf("Service %s listening on %s", serviceName, socketPath)
 
