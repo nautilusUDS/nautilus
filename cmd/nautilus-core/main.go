@@ -65,7 +65,7 @@ func main() {
 
 	lc := lifecycle.New()
 
-	// 3. Initialize Registry and Watcher for dynamic node discovery
+	// 2. Initialize Registry and Watcher for dynamic node discovery
 	reg, err := registry.NewRegistry(servicesDir)
 	if err != nil {
 		logs.Out.Error("Failed to initialize registry", zap.Error(err))
@@ -74,7 +74,7 @@ func main() {
 
 	manager := proxy.NewManager(reg)
 
-	// 2. Initialize Config Watcher (Handles load & hot-reload)
+	// 3. Initialize Config Watcher (Handles load & hot-reload)
 	cw, err := configwatcher.NewConfigWatcher(configPath, ntlcPath, manager)
 	if err != nil {
 		logs.Out.Error("Failed to initialize config watcher", zap.Error(err))

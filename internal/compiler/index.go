@@ -25,8 +25,9 @@ func Parse(r io.Reader) (*rtree.RouteTree, error) {
 	var skippingUntilBlank bool
 
 	scanner := bufio.NewScanner(r)
-
+	lineCount := 0
 	for scanner.Scan() {
+		lineCount++
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
 
@@ -53,7 +54,7 @@ func Parse(r io.Reader) (*rtree.RouteTree, error) {
 		if !isIndent {
 			fields, err := shlex.Split(trimmed)
 			if err != nil {
-				return nil, fmt.Errorf("invalid rule syntax: %s", trimmed)
+				return nil, fmt.Errorf("line %d: invalid rule syntax: %s", lineCount, trimmed)
 			}
 
 			rule := RawRule{}
@@ -68,7 +69,7 @@ func Parse(r io.Reader) (*rtree.RouteTree, error) {
 			case 3:
 				rule.Methods, rule.URL, rule.Service = fields[0], fields[1], fields[2]
 			default:
-				return nil, fmt.Errorf("invalid rule syntax: %s", trimmed)
+				return nil, fmt.Errorf("line %d: invalid rule fields (expected 1-3, got %d): %s", lineCount, len(fields), trimmed)
 			}
 
 			// Compile-time validation for virtual services
@@ -76,24 +77,28 @@ func Parse(r io.Reader) (*rtree.RouteTree, error) {
 				valid, name := virtualservices.IsValid(rule.Service)
 				if !valid {
 					if name == "" {
-						return nil, fmt.Errorf("invalid virtual service syntax: %s", rule.Service)
+						return nil, fmt.Errorf("line %d: invalid virtual service syntax: %s", lineCount, rule.Service)
 					}
-					return nil, fmt.Errorf("unknown virtual service: %s", name)
+					return nil, fmt.Errorf("line %d: unknown virtual service: %s", lineCount, name)
 				}
 			}
 
 			rawRules = append(rawRules, rule)
 			currentRule = &rawRules[len(rawRules)-1]
 
-		} else if currentRule != nil {
+		} else {
+			if currentRule == nil {
+				fmt.Printf("warning: line %d: unexpected indent without a preceding rule, skipping: %q\n", lineCount, trimmed)
+				continue
+			}
 			// Compile-time validation for built-in middlewares
 			if strings.HasPrefix(trimmed, "$") {
 				valid, name := builtinsmware.IsValid(trimmed)
 				if !valid {
 					if name == "" {
-						return nil, fmt.Errorf("invalid builtin middleware syntax: %s", trimmed)
+						return nil, fmt.Errorf("line %d: invalid builtin middleware syntax: %s", lineCount, trimmed)
 					}
-					return nil, fmt.Errorf("unknown builtin middleware: %s", name)
+					return nil, fmt.Errorf("line %d: unknown builtin middleware: %s", lineCount, name)
 				}
 			}
 			currentRule.Middlewares = append(currentRule.Middlewares, trimmed)
@@ -101,7 +106,7 @@ func Parse(r io.Reader) (*rtree.RouteTree, error) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("scanner error at line %d: %w", lineCount, err)
 	}
 
 	var rawNodes []*rtree.RawNode

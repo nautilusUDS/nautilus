@@ -67,7 +67,7 @@ func InitLogger(logLevelStr string) {
 	}
 
 	combinedCore := zapcore.NewTee(cores...)
-	Out = zap.New(combinedCore, zap.AddCaller())
+	Out = zap.New(combinedCore)
 
 	if sizeErr != nil {
 		Out.Error("Invalid NAUTILUS_LOG_MAX_SIZE", zap.Error(sizeErr))
