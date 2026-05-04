@@ -41,17 +41,19 @@ func main() {
 		log.Fatalf("Invalid entrypoint count: %v", err)
 	}
 
-	if err := os.MkdirAll(entrypointDir, 0777); err != nil {
+	// Create entrypoint directory if it doesn't exist
+	if err := os.MkdirAll(entrypointDir, 0755); err != nil {
 		log.Fatalf("Failed to create entrypoint directory: %v", err)
 	}
 	// Ensure permissions if directory already existed
-	os.Chmod(entrypointDir, 0777)
+	os.Chmod(entrypointDir, 0755)
 
 	// Create services directory if it doesn't exist
-	if err := os.MkdirAll(servicesDir, 0777); err != nil {
+	// 01777: Sticky bit ensures only the owner can delete their own socket
+	if err := os.MkdirAll(servicesDir, 01777); err != nil {
 		log.Fatalf("Failed to create services directory: %v", err)
 	}
-	os.Chmod(servicesDir, 0777)
+	os.Chmod(servicesDir, 01777)
 
 	lc := lifecycle.New()
 
