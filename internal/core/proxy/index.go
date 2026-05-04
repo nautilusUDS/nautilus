@@ -19,6 +19,12 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	ErrInternal    = "Internal Server Error"
+	ErrBadGateway  = "Bad Gateway"
+	ErrServiceUnav = "Service Unavailable"
+)
+
 // responseState wraps http.ResponseWriter to track if a response has been initiated.
 type responseState struct {
 	http.ResponseWriter
@@ -39,8 +45,9 @@ type Manager struct {
 	Tree     atomic.Pointer[rtree.RouteTree]
 	Registry *registry.Registry
 
-	builtinCache sync.Map // map[string]http.HandlerFunc
-	virtualCache sync.Map // map[string]http.HandlerFunc
+	middlewareCache sync.Map // map[string]string
+	builtinCache    sync.Map // map[string]http.HandlerFunc
+	virtualCache    sync.Map // map[string]http.HandlerFunc
 }
 
 func NewManager(reg *registry.Registry) *Manager {
@@ -74,6 +81,26 @@ func (m *Manager) resolveBuiltinMiddleware(expr string) builtinsmware.HandlerFun
 	}
 
 	return nil
+}
+
+func (m *Manager) resolveExternalMiddleware(expr string) (string, string, error) {
+	if h, ok := m.builtinCache.Load(expr); ok {
+		values := h.([]string)
+		return values[0], values[1], nil
+	}
+
+	funcName, args, err := builtins.ParseDirective(expr)
+	if err != nil {
+		return "", "", err
+	}
+
+	path := ""
+	if len(args) > 0 {
+		path = args[0]
+	}
+
+	m.builtinCache.Store(expr, []string{funcName, path})
+	return funcName, path, nil
 }
 
 // resolveVirtualService parses and caches functional virtual service expressions.
@@ -127,7 +154,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	lookupPath := host + r.URL.Path
 	node, exists := tree.Search(rtree.ReverseHost(lookupPath))
 	if !exists {
-		http.Error(w, "Not Found", http.StatusNotFound)
+		http.Error(w, "Resource Not Found", http.StatusNotFound)
 		return
 	}
 
@@ -183,21 +210,29 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				isHandled = true
 			} else {
-				logs.Out.Error("Failed to resolve built-in middleware", zap.String("middleware", mwExpr))
-				http.Error(trackedWriter, "Internal Middleware Error", http.StatusInternalServerError)
+				logs.Out.Error("Failed To Resolve Built-in Middleware", zap.String("expr", mwExpr))
+				http.Error(trackedWriter, ErrInternal, http.StatusInternalServerError)
 				return
 			}
 		} else {
-			mw, err := m.Registry.GetForwarder(mwExpr)
+			funcName, path, err := m.resolveExternalMiddleware(mwExpr)
 			if err != nil {
-				http.Error(trackedWriter, "Middleware Node Not Found", http.StatusBadGateway)
+				logs.Out.Error("Middleware Resolution Failed", zap.Error(err), zap.String("expr", mwExpr))
+				http.Error(trackedWriter, ErrInternal, http.StatusInternalServerError)
+				return
+			}
+
+			mw, err := m.Registry.GetForwarder(funcName)
+			if err != nil {
+				logs.Out.Error("Middleware Resolution Failed", zap.Error(err), zap.String("expr", mwExpr))
+				http.Error(trackedWriter, ErrInternal, http.StatusInternalServerError)
 				return
 			}
 
 			resp := builtinsmware.NewResponseWriter()
 			// External middleware (usually over UDS)
 
-			if !mw.ForwardMiddleware(resp, r, "") {
+			if !mw.ForwardMiddleware(resp, r, path) {
 				// If forwarding fails or is intercepted, stop execution
 				resp.WriteTo(trackedWriter)
 				return
@@ -224,15 +259,16 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			handler(trackedWriter, r)
 			return
 		}
-		logs.Out.Error("Failed to resolve virtual service", zap.String("virtualService", finalServiceName))
-		http.Error(trackedWriter, "Unknown Virtual Service: "+finalServiceName, http.StatusInternalServerError)
+		logs.Out.Error("Virtual Service Resolution Failed", zap.String("service", finalServiceName))
+		http.Error(trackedWriter, ErrInternal, http.StatusInternalServerError)
 		return
 	}
 
 	// 5. Load Balancing (Protected by RLock)
 	service, err := m.Registry.GetForwarder(finalServiceName)
 	if err != nil {
-		http.Error(trackedWriter, "Service Unavailable", http.StatusServiceUnavailable)
+		logs.Out.Warn("Backend Service Unavailable", zap.String("service", finalServiceName), zap.Error(err))
+		http.Error(trackedWriter, ErrServiceUnav, http.StatusServiceUnavailable)
 		return
 	}
 	service.Forward(w, r)
