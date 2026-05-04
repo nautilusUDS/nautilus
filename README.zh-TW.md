@@ -61,12 +61,35 @@ POST /upload/* storage-service
     $IPAllow(192.168.1.0/24)
 ```
 
-詳細的語法規格、內建中間件與虛擬服務清單，請參閱 [Configuration Guide](./docs/configuration.md)。
+詳細的語法規格、內建中間件與虛擬服務清單，請參閱 [語法指南](./docs/syntax.md)。關於 CLI 使用與核心設定，請參閱 [工具指南](./docs/ntlc.md)。
 
-## 架構
+## Docker 支援
 
-- **`cmd/`**: 核心引擎與 `ntlc` 編譯器的入口程式。
-- **`internal/`**: 包含代理、服務註冊與設定監控的核心邏輯。
+Nautilus 可以使用 Docker 與 Docker Compose 進行部署。這是推薦的體驗動態 UDS 代理與服務發現的環境。
+
+### 使用 Docker Compose 快速啟動
+
+1. **構建並啟動服務棧**:
+   ```bash
+   docker compose -f examples/docker-compose.yml up --build
+   ```
+
+
+2. **測試代理功能**:
+   範例配置包含一個 `gateway` (socat)，它將 TCP 端口 `8080` 橋接到 Nautilus 的 UDS 入口。
+   ```bash
+   # 測試後端服務
+   curl http://localhost:8080/
+
+   # 測試虛擬服務
+   curl http://localhost:8080/health
+   curl http://localhost:8080/debug/services
+   ```
+
+3. **Docker 內的目錄結構**:
+   - `/etc/nautilus`: 配置文件 (`.ntl`, `Ntlfile`)。
+   - `/var/run/nautilus/services`: 後端 UDS socket 檔案。
+   - `/var/run/nautilus/entrypoints`: Nautilus 入口 UDS socket 檔案。
 
 ## 授權
 

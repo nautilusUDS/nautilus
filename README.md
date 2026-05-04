@@ -61,12 +61,36 @@ POST /upload/* storage-service
     $IPAllow(192.168.1.0/24)
 ```
 
-For detailed syntax specifications, built-in middleware, and virtual service listings, please refer to the [Configuration Guide](./docs/configuration.md).
+For detailed syntax specifications, built-in middleware, and virtual service listings, please refer to the [Syntax Guide](./docs/syntax.md). 
+For CLI usage and core configuration, see the [Tooling Guide](./docs/ntlc.md).
 
-## Architecture
+## Docker Support
 
-- **`cmd/`**: Entry points for the core engine and the `ntlc` compiler.
-- **`internal/`**: Core logic including proxying, service registration, and configuration watching.
+Nautilus can be deployed using Docker and Docker Compose. This is the recommended way to experience the dynamic UDS proxying in a controlled environment.
+
+### Quick Start with Docker Compose
+
+1. **Build and start the stack**:
+   ```bash
+   docker compose -f examples/docker-compose.yml up --build
+   ```
+
+
+2. **Test the proxy**:
+   The example setup includes a `gateway` (socat) that bridges TCP port `8080` to the Nautilus UDS entrypoint.
+   ```bash
+   # Test the backend service
+   curl http://localhost:8080/
+
+   # Test virtual services
+   curl http://localhost:8080/health
+   curl http://localhost:8080/debug/services
+   ```
+
+3. **Directory Structure for Docker**:
+   - `/etc/nautilus`: Configuration files (`.ntl`, `Ntlfile`).
+   - `/var/run/nautilus/services`: Backend UDS sockets.
+   - `/var/run/nautilus/entrypoints`: Nautilus entrypoint sockets.
 
 ## License
 

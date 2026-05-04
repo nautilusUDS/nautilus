@@ -1,0 +1,36 @@
+services:
+  nautilus-core:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    volumes:
+      - nautilus-sockets:/var/run/nautilus
+      - ./nautilus.ntl.example:/etc/nautilus/nautilus.ntl
+    environment:
+      - NAUTILUS_CONFIG=/etc/nautilus/nautilus.ntl
+      - NAUTILUS_ENTRYPOINT_COUNT=1
+    restart: always
+
+  backend-service:
+    build:
+      context: ..
+      dockerfile: examples/backend/Dockerfile
+    environment:
+      - SERVICE_NAME=backend-service
+    volumes:
+      - nautilus-sockets:/var/run/nautilus
+    restart: always
+
+  # Optional: Bridge TCP to UDS so you can test from host
+  gateway:
+    image: alpine/socat
+    command: tcp-listen:8080,fork,reuseaddr unix-connect:/var/run/nautilus/entrypoints/nautilus-0.sock
+    ports:
+      - "8080:8080"
+    volumes:
+      - nautilus-sockets:/var/run/nautilus
+    depends_on:
+      - nautilus-core
+
+volumes:
+  nautilus-sockets:
