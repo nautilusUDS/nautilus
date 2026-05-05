@@ -1,16 +1,20 @@
 package main
 
 import (
-	"flag"
+	"context"
 	"fmt"
 	"nautilus/internal/core/configwatcher"
 	"nautilus/internal/core/logs"
+	"nautilus/internal/core/options"
 	"nautilus/internal/core/proxy"
 	"nautilus/internal/core/registry"
 	"nautilus/internal/core/watcher"
 	"os"
 	"path/filepath"
-	"strconv"
+	"strings"
+	"time"
+
+	"github.com/gofrs/flock"
 
 	"github.com/lucap9056/go-lifecycle/lifecycle"
 	"go.uber.org/zap"
@@ -25,48 +29,31 @@ func getEnv(key, fallback string) string {
 
 func main() {
 	// 1. Define and parse flags
-	configFlag := flag.String("config", getEnv("NAUTILUS_CONFIG", "nautilus.ntl"), "Path to config file (.ntl or Ntlfile)")
-	ntlcFlag := flag.String("ntlc", getEnv("NAUTILUS_NTLC", "ntlc"), "Path to ntlc executable")
-	servicesFlag := flag.String("services", getEnv("NAUTILUS_SERVICES_DIR", "/var/run/nautilus/services"), "Path to services directory")
-	entrypointDirFlag := flag.String("entrypoint-dir", getEnv("NAUTILUS_ENTRYPOINT_DIR", "/var/run/nautilus/entrypoints"), "Path to entrypoint directory")
-	entrypointCountFlag := flag.String("entrypoint-count", getEnv("NAUTILUS_ENTRYPOINT_COUNT", "1"), "Number of entrypoint instances to spawn")
-	logLevelFlag := flag.String("log-level", getEnv("NAUTILUS_LOG_LEVEL", "info"), "Log level (debug, info, warn, error, dpanic, panic, fatal)")
+	opts := options.Load()
 
-	flag.Parse()
-
-	logs.InitLogger(*logLevelFlag)
+	logs.InitLogger(opts.LogLevel)
 	defer logs.Sync()
 
-	configPath := *configFlag
-	ntlcPath := *ntlcFlag
-	servicesDir := *servicesFlag
-	entrypointDir := *entrypointDirFlag
-	entrypointCount, err := strconv.Atoi(*entrypointCountFlag)
-	if err != nil {
-		logs.Out.Error("Invalid entrypoint count", zap.Error(err))
-		entrypointCount = 1
-	}
-
 	// Create entrypoint directory if it doesn't exist
-	if err := os.MkdirAll(entrypointDir, 0755); err != nil {
+	if err := os.MkdirAll(opts.EntrypointDir, 0755); err != nil {
 		logs.Out.Error("Failed to create entrypoint directory", zap.Error(err))
 		return
 	}
 	// Ensure permissions if directory already existed
-	os.Chmod(entrypointDir, 0755)
+	os.Chmod(opts.EntrypointDir, 0755)
 
 	// Create services directory if it doesn't exist
 	// 01777: Sticky bit ensures only the owner can delete their own socket
-	if err := os.MkdirAll(servicesDir, 01777); err != nil {
+	if err := os.MkdirAll(opts.ServicesDir, 01777); err != nil {
 		logs.Out.Error("Failed to create services directory", zap.Error(err))
 		return
 	}
-	os.Chmod(servicesDir, 01777)
+	os.Chmod(opts.ServicesDir, 01777)
 
 	lc := lifecycle.New()
 
 	// 2. Initialize Registry and Watcher for dynamic node discovery
-	reg, err := registry.NewRegistry(servicesDir)
+	reg, err := registry.NewRegistry(opts.ServicesDir)
 	if err != nil {
 		logs.Out.Error("Failed to initialize registry", zap.Error(err))
 		return
@@ -75,7 +62,7 @@ func main() {
 	manager := proxy.NewManager(reg)
 
 	// 3. Initialize Config Watcher (Handles load & hot-reload)
-	cw, err := configwatcher.NewConfigWatcher(configPath, ntlcPath, manager)
+	cw, err := configwatcher.NewConfigWatcher(opts.ConfigPath, opts.NtlcPath, manager)
 	if err != nil {
 		logs.Out.Error("Failed to initialize config watcher", zap.Error(err))
 		return
@@ -108,31 +95,65 @@ func main() {
 		return
 	}
 
-	socketPaths := make([]string, entrypointCount)
-	for i := range entrypointCount {
-		socketName := fmt.Sprintf("nautilus-%d.sock", i)
-		socketPaths[i] = filepath.Join(entrypointDir, socketName)
+	hasToken := len(opts.Token) > 0
+
+	fileLockCtx, fileLockCancel := context.WithTimeout(context.Background(), time.Second*1)
+	defer fileLockCancel()
+
+	fileLock := flock.New(filepath.Join(opts.EntrypointDir, "nautilus.lock"))
+	locked, err := fileLock.TryLockContext(fileLockCtx, 200*time.Millisecond)
+	if err != nil || !locked {
+		logs.Out.Error("Failed to acquire lock", zap.Error(err))
+		return
+	}
+	defer fileLock.Unlock()
+
+	token := "-"
+	if hasToken {
+		token = fmt.Sprintf("-%s-", opts.Token)
+	}
+	if hasToken || opts.ForceClean {
+		err := cleanLegacySockets(opts.EntrypointDir, token, opts.ForceClean)
+		if err != nil {
+			logs.Out.Error("Failed to clean legacy sockets", zap.Error(err))
+			return
+		}
 	}
 
-	for _, socketPath := range socketPaths {
+	socketPathMap := make(map[string]context.CancelFunc, opts.EntrypointCount)
+	offset := 0
+	for i := 0; i < opts.EntrypointCount; {
+		socketName := fmt.Sprintf("nautilus%s%d.sock", token, i+offset)
+		socketPath := filepath.Join(opts.EntrypointDir, socketName)
+
 		if _, err := os.Stat(socketPath); err == nil {
-			if err := os.Remove(socketPath); err != nil {
-				logs.Out.Error("Failed to remove existing socket", zap.Error(err))
-			}
+			offset++
+			continue
 		}
 
+		socketPathMap[socketPath] = nil
+		i++
+	}
+
+	for socketPath := range socketPathMap {
+		ctx, cancel := context.WithCancel(context.Background())
+		socketPathMap[socketPath] = cancel
 		go func(s string) {
-			if err := manager.StartUDSListener(s); err != nil {
+			if err := manager.StartUDSListener(ctx, s); err != nil {
 				logs.Out.Error("Failed to start listener", zap.Error(err))
+				cancel()
 				lc.Exit()
 			}
 		}(socketPath)
-
 	}
+
+	fileLock.Unlock()
+	fileLockCancel()
 
 	lc.OnExit(func() {
 		logs.Out.Info("Shutting down Nautilus Core...")
-		for _, socketPath := range socketPaths {
+		for socketPath, cancel := range socketPathMap {
+			cancel()
 			logs.Out.Info("Removing socket", zap.String("socketPath", socketPath))
 			if _, err := os.Stat(socketPath); err == nil {
 				os.Remove(socketPath)
@@ -141,4 +162,33 @@ func main() {
 	})
 
 	lc.Wait()
+}
+
+func cleanLegacySockets(dir string, token string, force bool) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sock") {
+			continue
+		}
+		filePath := filepath.Join(dir, entry.Name())
+		if force {
+			err := os.Remove(filePath)
+			if err != nil {
+				logs.Out.Error("Failed to remove entrypoint", zap.Error(err))
+			}
+			continue
+		}
+		if !strings.Contains(entry.Name(), token) {
+			continue
+		}
+
+		err := os.Remove(filePath)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
