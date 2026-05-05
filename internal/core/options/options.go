@@ -1,9 +1,9 @@
 package options
 
 import (
-	"encoding/hex"
 	"flag"
 	"os"
+	"regexp"
 	"strconv"
 )
 
@@ -34,6 +34,7 @@ func Load() *Options {
 	if err != nil {
 		entrypointCount = 1
 	}
+	reg := regexp.MustCompile(`[^a-zA-Z0-9._-]`)
 
 	return &Options{
 		ConfigPath:      *configPtr,
@@ -42,7 +43,7 @@ func Load() *Options {
 		EntrypointDir:   *entrypointDirPtr,
 		EntrypointCount: entrypointCount,
 		LogLevel:        *logLevelPtr,
-		Token:           hex.EncodeToString([]byte(*tokenPtr)),
+		Token:           reg.ReplaceAllString(*tokenPtr, "_"),
 		ForceClean:      (*forceCleanPtr) == "true",
 	}
 }
