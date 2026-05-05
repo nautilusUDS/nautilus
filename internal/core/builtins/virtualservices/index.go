@@ -73,7 +73,7 @@ func ERR(args ...string) http.HandlerFunc {
 func Metrics(args ...string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-		metrics.Global.WritePrometheus(w)
+		metrics.Global.WritePrometheus(w, r)
 	}
 }
 

@@ -1,47 +1,171 @@
 package metrics
 
 import (
-	"fmt"
 	"net/http"
-	"sync/atomic"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+// Registry wraps Prometheus collectors to maintain backward compatibility
+// and provide a central point for metrics management.
 type Registry struct {
-	RequestsTotal    uint64
-	ErrorsTotal      uint64
-	ConfigUpdates    uint64
-	ActiveRequests   int64
-	StartTime        time.Time
+	handler http.Handler
+
+	// Existing metrics (legacy support)
+	requestsTotal  prometheus.Counter
+	errorsTotal    prometheus.Counter
+	configUpdates  prometheus.Counter
+	activeRequests prometheus.Gauge
+	uptimeSeconds  prometheus.Collector
+
+	// New performance and latency metrics
+	RequestDuration  *prometheus.HistogramVec
+	UpstreamDuration *prometheus.HistogramVec
+
+	// Detailed traffic analysis
+	HTTPRequestsTotal *prometheus.CounterVec
+	RequestBytesTotal  *prometheus.CounterVec
+	ResponseBytesTotal *prometheus.CounterVec
+
+	// Service registration and health
+	ServiceNodesActive    *prometheus.GaugeVec
+	NodeFailuresTotal     *prometheus.CounterVec
+	RegistryScanDuration  prometheus.Histogram
+
+	// System and configuration
+	ConfigReloadDuration prometheus.Histogram
+	ConfigErrorsTotal    *prometheus.CounterVec
 }
 
-var Global = &Registry{
-	StartTime: time.Now(),
+var (
+	// Global is the default registry instance
+	Global *Registry
+
+	// DefaultBuckets for histograms
+	DefaultBuckets = []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10}
+)
+
+func init() {
+	Global = NewRegistry()
 }
 
-func (r *Registry) IncRequests() { atomic.AddUint64(&r.RequestsTotal, 1) }
-func (r *Registry) IncErrors()   { atomic.AddUint64(&r.ErrorsTotal, 1) }
-func (r *Registry) IncUpdates()  { atomic.AddUint64(&r.ConfigUpdates, 1) }
-func (r *Registry) AddActive(n int64) { atomic.AddInt64(&r.ActiveRequests, n) }
+// NewRegistry creates and registers a new Prometheus-backed registry
+func NewRegistry() *Registry {
+	startTime := time.Now()
 
-func (r *Registry) WritePrometheus(w http.ResponseWriter) {
-	fmt.Fprintf(w, "# HELP nautilus_requests_total Total number of processed requests\n")
-	fmt.Fprintf(w, "# TYPE nautilus_requests_total counter\n")
-	fmt.Fprintf(w, "nautilus_requests_total %d\n", atomic.LoadUint64(&r.RequestsTotal))
+	r := &Registry{
+		requestsTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "nautilus_requests_total",
+			Help: "Total number of processed requests",
+		}),
+		errorsTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "nautilus_errors_total",
+			Help: "Total number of failed requests",
+		}),
+		configUpdates: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "nautilus_config_updates_total",
+			Help: "Total number of configuration swaps",
+		}),
+		activeRequests: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "nautilus_active_requests",
+			Help: "Number of requests currently being processed",
+		}),
+		uptimeSeconds: prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "nautilus_uptime_seconds",
+			Help: "Engine uptime in seconds",
+		}, func() float64 {
+			return time.Since(startTime).Seconds()
+		}),
 
-	fmt.Fprintf(w, "# HELP nautilus_errors_total Total number of failed requests\n")
-	fmt.Fprintf(w, "# TYPE nautilus_errors_total counter\n")
-	fmt.Fprintf(w, "nautilus_errors_total %d\n", atomic.LoadUint64(&r.ErrorsTotal))
+		RequestDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "nautilus_request_duration_seconds",
+			Help:    "Request processing time in seconds",
+			Buckets: DefaultBuckets,
+		}, []string{"method", "route"}),
 
-	fmt.Fprintf(w, "# HELP nautilus_config_updates_total Total number of configuration swaps\n")
-	fmt.Fprintf(w, "# TYPE nautilus_config_updates_total counter\n")
-	fmt.Fprintf(w, "nautilus_config_updates_total %d\n", atomic.LoadUint64(&r.ConfigUpdates))
+		UpstreamDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "nautilus_upstream_duration_seconds",
+			Help:    "Upstream response time in seconds",
+			Buckets: DefaultBuckets,
+		}, []string{"service", "node"}),
 
-	fmt.Fprintf(w, "# HELP nautilus_active_requests Number of requests currently being processed\n")
-	fmt.Fprintf(w, "# TYPE nautilus_active_requests gauge\n")
-	fmt.Fprintf(w, "nautilus_active_requests %d\n", atomic.LoadInt64(&r.ActiveRequests))
+		HTTPRequestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "nautilus_http_requests_total",
+			Help: "Total number of HTTP requests",
+		}, []string{"service", "status", "method"}),
 
-	fmt.Fprintf(w, "# HELP nautilus_uptime_seconds Engine uptime in seconds\n")
-	fmt.Fprintf(w, "# TYPE nautilus_uptime_seconds gauge\n")
-	fmt.Fprintf(w, "nautilus_uptime_seconds %.0f\n", time.Since(r.StartTime).Seconds())
+		RequestBytesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "nautilus_request_bytes_total",
+			Help: "Total number of bytes received",
+		}, []string{"service"}),
+
+		ResponseBytesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "nautilus_response_bytes_total",
+			Help: "Total number of bytes sent",
+		}, []string{"service"}),
+
+		ServiceNodesActive: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "nautilus_service_nodes_active",
+			Help: "Number of active UDS nodes per service",
+		}, []string{"service"}),
+
+		NodeFailuresTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "nautilus_node_failures_total",
+			Help: "Total number of UDS connection failures",
+		}, []string{"service", "node"}),
+
+		RegistryScanDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "nautilus_registry_scan_duration_seconds",
+			Help:    "UDS directory scan duration in seconds",
+			Buckets: DefaultBuckets,
+		}),
+
+		ConfigReloadDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "nautilus_config_reload_duration_seconds",
+			Help:    "Configuration hot-reload duration in seconds",
+			Buckets: DefaultBuckets,
+		}),
+
+		ConfigErrorsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "nautilus_config_errors_total",
+			Help: "Total number of configuration errors",
+		}, []string{"type"}),
+	}
+
+	// Register all collectors
+	prometheus.MustRegister(
+		r.requestsTotal,
+		r.errorsTotal,
+		r.configUpdates,
+		r.activeRequests,
+		r.uptimeSeconds,
+		r.RequestDuration,
+		r.UpstreamDuration,
+		r.HTTPRequestsTotal,
+		r.RequestBytesTotal,
+		r.ResponseBytesTotal,
+		r.ServiceNodesActive,
+		r.NodeFailuresTotal,
+		r.RegistryScanDuration,
+		r.ConfigReloadDuration,
+		r.ConfigErrorsTotal,
+	)
+
+	// Cache the handler
+	r.handler = promhttp.Handler()
+
+	return r
+}
+
+// Legacy methods for backward compatibility
+func (r *Registry) IncRequests()      { r.requestsTotal.Inc() }
+func (r *Registry) IncErrors()        { r.errorsTotal.Inc() }
+func (r *Registry) IncUpdates()       { r.configUpdates.Inc() }
+func (r *Registry) AddActive(n int64) { r.activeRequests.Add(float64(n)) }
+
+// WritePrometheus writes metrics in Prometheus format to the response writer
+func (r *Registry) WritePrometheus(w http.ResponseWriter, req *http.Request) {
+	r.handler.ServeHTTP(w, req)
 }
