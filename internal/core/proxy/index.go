@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"fmt"
 	"nautilus/internal/core/builtins"
 	"nautilus/internal/core/builtins/builtinsmware"
@@ -306,7 +307,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	service.Forward(trackedWriter, r)
 }
 
-func (m *Manager) StartUDSListener(socketPath string) error {
+func (m *Manager) StartUDSListener(ctx context.Context, socketPath string) error {
 	if _, err := os.Stat(socketPath); err == nil {
 		if err := os.Remove(socketPath); err != nil {
 			return err
@@ -319,6 +320,12 @@ func (m *Manager) StartUDSListener(socketPath string) error {
 	if err := os.Chmod(socketPath, 0666); err != nil {
 		return err
 	}
+
+	go func() {
+		<-ctx.Done()
+		listener.Close()
+	}()
+
 	logs.Out.Info("Nautilus Core listening on UDS", zap.String("socketPath", socketPath))
 	return http.Serve(listener, m)
 }
