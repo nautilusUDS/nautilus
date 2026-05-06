@@ -6,8 +6,10 @@ import (
 	"nautilus/internal/interpolate"
 	"nautilus/internal/tags"
 	"net/http"
+	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"unsafe"
 )
 
@@ -65,8 +67,16 @@ type RouteNode struct {
 
 // backtrackState stores information for DFS-based wildcard searching.
 type backtrackState struct {
-	edge   *Edge
-	urlIdx int
+	edge            *Edge
+	urlIdx          int
+	lastWasWildcard bool
+}
+
+var stackPool = sync.Pool{
+	New: func() any {
+		s := make([]backtrackState, 0, 8)
+		return &s
+	},
 }
 
 // Search looks up a URL in the tree and returns the matching RouteNode.
@@ -77,22 +87,31 @@ func (t *RouteTree) Search(url []byte) (*RouteNode, bool) {
 	}
 
 	// Pre-allocate stack for backtracking to handle wildcards '*'
-	stack := make([]backtrackState, 0, 8)
+	stackPtr := stackPool.Get().(*[]backtrackState)
+	stack := (*stackPtr)[:0]
+	defer func() {
+		*stackPtr = stack
+		stackPool.Put(stackPtr)
+	}()
+
 	urlIdx := 0
 	urlLen := len(url)
+
+	lastWasWildcard := false
 
 	firstChar := url[0]
 	var currentEdge *Edge
 
 	// Initial root selection
-	if t.Root[firstChar].TargetID != 0 {
+	switch {
+	case t.Root[firstChar].TargetID != 0:
 		currentEdge = &t.Root[firstChar]
 		if firstChar != '*' && t.Root['*'].TargetID != 0 {
-			stack = append(stack, backtrackState{edge: &t.Root['*'], urlIdx: 0})
+			stack = append(stack, backtrackState{edge: &t.Root['*'], urlIdx: 0, lastWasWildcard: false})
 		}
-	} else if t.Root['*'].TargetID != 0 {
+	case t.Root['*'].TargetID != 0:
 		currentEdge = &t.Root['*']
-	} else {
+	default:
 		return nil, false
 	}
 
@@ -109,15 +128,33 @@ func (t *RouteTree) Search(url []byte) (*RouteNode, bool) {
 					return node, true
 				}
 			} else {
-				// Peek next expected static fragment after wildcard
-				nextEdge := &node.Edges[0]
-				targetFrag := t.FragmentPool[nextEdge.Offset:nextEdge.End]
+				for i := range node.Edges {
+					e := &node.Edges[i]
+					targetFrag := t.FragmentPool[e.Offset:e.End]
 
-				foundIdx := bytes.Index(url[urlIdx:], targetFrag)
-				if foundIdx >= 0 {
-					urlIdx += foundIdx
-					currentEdge = nextEdge
-					continue
+					if targetFrag[0] == '*' {
+						stack = append(stack, backtrackState{edge: e, urlIdx: urlIdx, lastWasWildcard: true})
+					} else {
+						searchSpace := url[urlIdx:]
+						searchStart := 0
+						for {
+							idx := bytes.Index(searchSpace[searchStart:], targetFrag)
+							if idx == -1 {
+								break
+							}
+							foundIdx := searchStart + idx
+							consumed := searchSpace[:foundIdx]
+
+							if lastWasWildcard || bytes.IndexByte(consumed, '/') == -1 {
+								stack = append(stack, backtrackState{
+									edge:            e,
+									urlIdx:          urlIdx + foundIdx,
+									lastWasWildcard: true,
+								})
+							}
+							searchStart += idx + 1
+						}
+					}
 				}
 			}
 		} else {
@@ -146,14 +183,19 @@ func (t *RouteTree) Search(url []byte) (*RouteNode, bool) {
 						}
 					}
 
-					if exactMatch != nil {
+					switch {
+					case exactMatch != nil:
+
 						if wildcardMatch != nil {
-							stack = append(stack, backtrackState{edge: wildcardMatch, urlIdx: urlIdx})
+							stack = append(stack, backtrackState{edge: wildcardMatch, urlIdx: urlIdx, lastWasWildcard: false})
 						}
 						currentEdge = exactMatch
+						lastWasWildcard = false
 						matched = true
-					} else if wildcardMatch != nil {
+
+					case wildcardMatch != nil:
 						currentEdge = wildcardMatch
+						lastWasWildcard = false
 						matched = true
 					}
 
@@ -169,6 +211,7 @@ func (t *RouteTree) Search(url []byte) (*RouteNode, bool) {
 				stack = stack[:len(stack)-1]
 				currentEdge = last.edge
 				urlIdx = last.urlIdx
+				lastWasWildcard = last.lastWasWildcard
 				continue
 			}
 			break
@@ -202,9 +245,10 @@ func Build(rawNodes []*RawNode) *RouteTree {
 	}
 
 	actionMap := make(map[string]uint32)
+	wildcardReg := regexp.MustCompile(`\*{3,}`)
 
 	for _, raw := range rawNodes {
-		url := ReverseHost(raw.URL)
+		url := ReverseHost(wildcardReg.ReplaceAllString(raw.URL, "**"))
 		methodMask := parseMethods(raw.Methods)
 		tagMask := tags.Analyze(raw.Tags)
 
