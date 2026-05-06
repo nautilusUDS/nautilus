@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"log"
 	"nautilus/internal/interpolate"
+	"nautilus/internal/tags"
 	"net/http"
 	"slices"
 	"strings"
@@ -59,6 +60,7 @@ type RouteNode struct {
 	Edges       []Edge // Outgoing transitions
 	ActionIndex uint32
 	Methods     uint16 // Bitmask of allowed HTTP methods; 0 if not a leaf
+	Tags        uint16
 }
 
 // backtrackState stores information for DFS-based wildcard searching.
@@ -183,6 +185,7 @@ type RawNode struct {
 	Service     string
 	Middlewares []string
 	Methods     string // Comma-separated methods, e.g., "GET,POST"
+	Tags        []string
 }
 
 // Build constructs a finalized RouteTree from a slice of RawNodes.
@@ -203,6 +206,7 @@ func Build(rawNodes []*RawNode) *RouteTree {
 	for _, raw := range rawNodes {
 		url := ReverseHost(raw.URL)
 		methodMask := parseMethods(raw.Methods)
+		tagMask := tags.Analyze(raw.Tags)
 
 		svcID := t.getOrCreateActionID(raw.Service, actionMap)
 
@@ -221,7 +225,7 @@ func Build(rawNodes []*RawNode) *RouteTree {
 
 		t.ActionMetadata = append(t.ActionMetadata, actions...)
 
-		t.insert(url, actionIndex, methodMask)
+		t.insert(url, actionIndex, methodMask, tagMask)
 	}
 
 	totalLen := t.compress()
@@ -299,7 +303,7 @@ func (t *RouteTree) GetActionName(index uint32) string {
 	return unsafe.String(&b[0], len(b))
 }
 
-func (t *RouteTree) insert(url []byte, actionIndex uint32, methods uint16) {
+func (t *RouteTree) insert(url []byte, actionIndex uint32, methods uint16, tags uint16) {
 	if len(url) == 0 {
 		return
 	}
@@ -334,6 +338,7 @@ func (t *RouteTree) insert(url []byte, actionIndex uint32, methods uint16) {
 
 	currNode.ActionIndex = actionIndex
 	currNode.Methods = methods
+	currNode.Tags = tags
 }
 
 // compress merges single-child nodes to form a radix tree.
@@ -417,6 +422,7 @@ func (t *RouteTree) rebuildPool(e *Edge) Edge {
 		Edges:       edges,
 		ActionIndex: e.Node.ActionIndex,
 		Methods:     e.Node.Methods,
+		Tags:        e.Node.Tags,
 	})
 
 	return Edge{

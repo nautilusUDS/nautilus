@@ -12,16 +12,9 @@ import (
 	"github.com/google/shlex"
 )
 
-type RawRule struct {
-	Methods     string
-	URL         string
-	Service     string
-	Middlewares []string
-}
-
 func Parse(r io.Reader) (*rtree.RouteTree, error) {
-	var rawRules []RawRule
-	var currentRule *RawRule
+	var rawRules []rtree.RawNode
+	var currentRule *rtree.RawNode
 	var skippingUntilBlank bool
 
 	scanner := bufio.NewScanner(r)
@@ -57,7 +50,7 @@ func Parse(r io.Reader) (*rtree.RouteTree, error) {
 				return nil, fmt.Errorf("line %d: invalid rule syntax: %s", lineCount, trimmed)
 			}
 
-			rule := RawRule{}
+			rule := rtree.RawNode{}
 
 			switch len(fields) {
 			case 0:
@@ -91,8 +84,12 @@ func Parse(r io.Reader) (*rtree.RouteTree, error) {
 				fmt.Printf("warning: line %d: unexpected indent without a preceding rule, skipping: %q\n", lineCount, trimmed)
 				continue
 			}
+
+			switch trimmed[0] {
+			case '@':
+				currentRule.Tags = append(currentRule.Tags, trimmed)
 			// Compile-time validation for built-in middlewares
-			if strings.HasPrefix(trimmed, "$") {
+			case '$':
 				valid, name := builtinsmware.IsValid(trimmed)
 				if !valid {
 					if name == "" {
@@ -100,8 +97,10 @@ func Parse(r io.Reader) (*rtree.RouteTree, error) {
 					}
 					return nil, fmt.Errorf("line %d: unknown builtin middleware: %s", lineCount, name)
 				}
+				fallthrough
+			default:
+				currentRule.Middlewares = append(currentRule.Middlewares, trimmed)
 			}
-			currentRule.Middlewares = append(currentRule.Middlewares, trimmed)
 		}
 	}
 
@@ -117,6 +116,7 @@ func Parse(r io.Reader) (*rtree.RouteTree, error) {
 				URL:         url,
 				Service:     rule.Service,
 				Middlewares: rule.Middlewares,
+				Tags:        rule.Tags,
 			})
 		}
 	}

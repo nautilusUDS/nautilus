@@ -11,6 +11,7 @@ import (
 	"nautilus/internal/core/registry"
 	"nautilus/internal/interpolate"
 	"nautilus/internal/rtree"
+	"nautilus/internal/tags"
 	"net"
 	"net/http"
 	"os"
@@ -165,15 +166,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	defer func() {
 		duration := time.Since(start).Seconds()
-		statusStr := fmt.Sprintf("%d", trackedWriter.status)
-
 		metrics.Global.RequestDuration.WithLabelValues(r.Method, routePattern).Observe(duration)
-		metrics.Global.HTTPRequestsTotal.WithLabelValues(finalServiceName, statusStr, r.Method).Inc()
-		metrics.Global.ResponseBytesTotal.WithLabelValues(finalServiceName).Add(float64(trackedWriter.size))
-
-		if r.ContentLength > 0 {
-			metrics.Global.RequestBytesTotal.WithLabelValues(finalServiceName).Add(float64(r.ContentLength))
-		}
 	}()
 
 	tree := m.Tree.Load()
@@ -192,6 +185,18 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	routePattern = lookupPath // Simplified for now, could be node.Pattern if available
+
+	if node.Tags&tags.NoMetricsTag == 0 {
+		defer func() {
+			statusStr := fmt.Sprintf("%d", trackedWriter.status)
+			metrics.Global.HTTPRequestsTotal.WithLabelValues(finalServiceName, statusStr, r.Method).Inc()
+			metrics.Global.ResponseBytesTotal.WithLabelValues(finalServiceName).Add(float64(trackedWriter.size))
+
+			if r.ContentLength > 0 {
+				metrics.Global.RequestBytesTotal.WithLabelValues(finalServiceName).Add(float64(r.ContentLength))
+			}
+		}()
+	}
 
 	// 2. Method Validation
 	methodBit := rtree.HTTPMethodMap[r.Method]
