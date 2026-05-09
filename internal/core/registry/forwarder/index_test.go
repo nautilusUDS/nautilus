@@ -132,6 +132,8 @@ func TestForwarder_FailureReporting(t *testing.T) {
 		assert.Equal(t, http.StatusBadGateway, w.Code)
 	})
 
+	f.isFailed.Store(false)
+
 	t.Run("ForwardMiddleware Failure", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "http://example.com/", nil)
 		w := builtinsmware.NewResponseWriter()
