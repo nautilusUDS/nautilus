@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"errors"
 	"nautilus/internal/core/logs"
 	"nautilus/internal/core/metrics"
 	"nautilus/internal/core/registry/forwarder"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"go.uber.org/zap"
@@ -19,8 +21,9 @@ type Registry struct {
 	mu      sync.RWMutex
 	baseDir string
 
-	services map[string]*ServiceSet  // serviceName -> node list & load balanced index
-	nodeMap  map[string]*nodeContext // nodePath -> forwarder & service name
+	services  map[string]*ServiceSet // serviceName -> node list & load balanced index
+	unhealthy map[string]*ServiceSet
+	nodeMap   map[string]*nodeContext // nodePath -> forwarder & service name
 
 	failureChan chan forwarder.FailureForwarder
 }
@@ -43,6 +46,7 @@ func NewRegistry(baseDir string) (*Registry, error) {
 
 	r := &Registry{
 		services:    make(map[string]*ServiceSet),
+		unhealthy:   make(map[string]*ServiceSet),
 		nodeMap:     make(map[string]*nodeContext),
 		baseDir:     strings.TrimRight(filepath.ToSlash(absBase), "/"),
 		failureChan: make(chan forwarder.FailureForwarder, 100),
@@ -59,16 +63,49 @@ func (r *Registry) BaseDir() string {
 
 func (r *Registry) listenFailures() {
 	for failure := range r.failureChan {
+		removeNeeded := errors.Is(failure.Error, syscall.ECONNREFUSED)
+
 		logs.Out.Error("Node failure detected", zap.String("socketPath", failure.SocketPath), zap.Error(failure.Error))
 
-		r.mu.RLock()
+		r.mu.Lock()
 		ctx, ok := r.nodeMap[failure.SocketPath]
 		if ok {
 			metrics.Global.NodeFailuresTotal.WithLabelValues(ctx.serviceName, failure.SocketPath).Inc()
+			if removeNeeded {
+				r.removeNodeUnsafe(failure.SocketPath, true)
+			} else {
+				r.moveToUnhealthyUnsafe(ctx.serviceName, failure.SocketPath)
+			}
 		}
-		r.mu.RUnlock()
+		r.mu.Unlock()
 
-		r.RemoveNode(failure.SocketPath, true)
+		if removeNeeded {
+			r.RemoveNode(failure.SocketPath, true)
+		}
+
+	}
+}
+
+func (r *Registry) moveToUnhealthyUnsafe(serviceName, nodePath string) {
+	if ss, ok := r.services[serviceName]; ok {
+		for i, n := range ss.nodes {
+			if n == nodePath {
+				ss.nodes = slices.Delete(ss.nodes, i, i+1)
+				break
+			}
+		}
+		if len(ss.nodes) == 0 {
+			delete(r.services, serviceName)
+		}
+		metrics.Global.ServiceNodesActive.WithLabelValues(serviceName).Set(float64(len(ss.nodes)))
+	}
+
+	if _, ok := r.unhealthy[serviceName]; !ok {
+		r.unhealthy[serviceName] = &ServiceSet{}
+	}
+
+	if !slices.Contains(r.unhealthy[serviceName].nodes, nodePath) {
+		r.unhealthy[serviceName].nodes = append(r.unhealthy[serviceName].nodes, nodePath)
 	}
 }
 
@@ -131,7 +168,7 @@ func (r *Registry) Scan(target string) error {
 		return r.fullScan()
 	}
 
-	return r.ScanService(target)
+	return r.scanService(target)
 }
 
 func (r *Registry) fullScan() error {
@@ -170,11 +207,14 @@ func (r *Registry) fullScan() error {
 		discovered, found := scannedState[ctx.serviceName]
 		if !found || !slices.Contains(discovered, path) {
 			r.removeNodeUnsafe(path, false)
+			r.removeFromUnhealthyUnsafe(ctx.serviceName, path)
 		}
 	}
 
 	// 2. Add new nodes and update services
 	for svcName, nodes := range scannedState {
+		healthyNodes := make([]string, 0)
+
 		for _, node := range nodes {
 			if _, exists := r.nodeMap[node]; !exists {
 				r.nodeMap[node] = &nodeContext{
@@ -182,12 +222,27 @@ func (r *Registry) fullScan() error {
 					forwarder:   forwarder.New(svcName, node, r.failureChan),
 				}
 			}
+
+			isUnhealthy := false
+			if us, ok := r.unhealthy[svcName]; ok {
+				if slices.Contains(us.nodes, node) {
+					isUnhealthy = true
+				}
+			}
+
+			if !isUnhealthy {
+				healthyNodes = append(healthyNodes, node)
+			}
 		}
 
-		if ss, exists := r.services[svcName]; exists {
-			ss.nodes = nodes
+		if len(healthyNodes) > 0 {
+			if ss, exists := r.services[svcName]; exists {
+				ss.nodes = healthyNodes
+			} else {
+				r.services[svcName] = &ServiceSet{nodes: healthyNodes}
+			}
 		} else {
-			r.services[svcName] = &ServiceSet{nodes: nodes}
+			delete(r.services, svcName)
 		}
 		metrics.Global.ServiceNodesActive.WithLabelValues(svcName).Set(float64(len(nodes)))
 	}
@@ -196,7 +251,7 @@ func (r *Registry) fullScan() error {
 }
 
 // ScanService performs a targeted scan of a single service directory
-func (r *Registry) ScanService(serviceName string) error {
+func (r *Registry) scanService(serviceName string) error {
 	serviceDir := filepath.Join(r.baseDir, serviceName)
 	var discoveredNodes []string
 
@@ -223,6 +278,7 @@ func (r *Registry) ScanService(serviceName string) error {
 		for _, oldNode := range currentSet.nodes {
 			if !slices.Contains(discoveredNodes, oldNode) {
 				r.removeNodeUnsafe(oldNode, false)
+				r.removeFromUnhealthyUnsafe(serviceName, oldNode)
 			}
 		}
 	}
@@ -234,20 +290,36 @@ func (r *Registry) ScanService(serviceName string) error {
 		return nil
 	}
 
-	for _, newNode := range discoveredNodes {
-		if _, exists := r.nodeMap[newNode]; !exists {
-			r.nodeMap[newNode] = &nodeContext{
+	finalHealthyNodes := make([]string, 0)
+	for _, node := range discoveredNodes {
+		if _, exists := r.nodeMap[node]; !exists {
+			r.nodeMap[node] = &nodeContext{
 				serviceName: serviceName,
-				forwarder:   forwarder.New(serviceName, newNode, r.failureChan),
+				forwarder:   forwarder.New(serviceName, node, r.failureChan),
 			}
+		}
+
+		isUnhealthy := false
+		if us, ok := r.unhealthy[serviceName]; ok {
+			if slices.Contains(us.nodes, node) {
+				isUnhealthy = true
+			}
+		}
+
+		if !isUnhealthy {
+			finalHealthyNodes = append(finalHealthyNodes, node)
 		}
 	}
 
 	// 3. Update service set
-	if !exists {
-		r.services[serviceName] = &ServiceSet{nodes: discoveredNodes}
+	if len(finalHealthyNodes) > 0 {
+		if ss, exists := r.services[serviceName]; exists {
+			ss.nodes = finalHealthyNodes
+		} else {
+			r.services[serviceName] = &ServiceSet{nodes: finalHealthyNodes}
+		}
 	} else {
-		r.services[serviceName].nodes = discoveredNodes
+		delete(r.services, serviceName)
 	}
 	metrics.Global.ServiceNodesActive.WithLabelValues(serviceName).Set(float64(len(discoveredNodes)))
 
@@ -284,5 +356,76 @@ func (r *Registry) removeNodeUnsafe(nodePath string, shouldDeleteFile bool) {
 
 	if shouldDeleteFile {
 		go os.Remove(nodePath)
+	}
+}
+
+func (r *Registry) RetryUnhealthy() {
+	r.mu.Lock()
+	toCheck := make(map[string][]string)
+	for svcName, ss := range r.unhealthy {
+		if len(ss.nodes) > 0 {
+			toCheck[svcName] = slices.Clone(ss.nodes)
+		}
+	}
+	r.mu.Unlock()
+
+	for svcName, nodes := range toCheck {
+		for _, nodePath := range nodes {
+			r.mu.RLock()
+			ctx, ok := r.nodeMap[nodePath]
+			r.mu.RUnlock()
+
+			if !ok {
+				r.mu.Lock()
+				r.removeFromUnhealthyUnsafe(svcName, nodePath)
+				r.mu.Unlock()
+				continue
+			}
+
+			if err := ctx.forwarder.TryReconnect(); err == nil {
+				logs.Out.Info("Node recovered",
+					zap.String("service", svcName),
+					zap.String("socketPath", nodePath))
+
+				r.mu.Lock()
+				r.promoteToHealthyUnsafe(svcName, nodePath)
+				r.mu.Unlock()
+			} else {
+				logs.Out.Debug("Node still unhealthy",
+					zap.String("service", svcName),
+					zap.String("socketPath", nodePath),
+					zap.Error(err))
+			}
+		}
+	}
+}
+
+func (r *Registry) promoteToHealthyUnsafe(serviceName, nodePath string) {
+	r.removeFromUnhealthyUnsafe(serviceName, nodePath)
+
+	ss, ok := r.services[serviceName]
+	if !ok {
+		ss = &ServiceSet{}
+		r.services[serviceName] = ss
+	}
+
+	if !slices.Contains(ss.nodes, nodePath) {
+		ss.nodes = append(ss.nodes, nodePath)
+	}
+
+	metrics.Global.ServiceNodesActive.WithLabelValues(serviceName).Set(float64(len(ss.nodes)))
+}
+
+func (r *Registry) removeFromUnhealthyUnsafe(serviceName, nodePath string) {
+	if ss, ok := r.unhealthy[serviceName]; ok {
+		for i, n := range ss.nodes {
+			if n == nodePath {
+				ss.nodes = slices.Delete(ss.nodes, i, i+1)
+				break
+			}
+		}
+		if len(ss.nodes) == 0 {
+			delete(r.unhealthy, serviceName)
+		}
 	}
 }

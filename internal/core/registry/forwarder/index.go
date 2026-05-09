@@ -11,6 +11,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,6 +27,7 @@ type Forwarder struct {
 	reverseProxy *httputil.ReverseProxy
 	onFailure    chan FailureForwarder
 	wg           sync.WaitGroup
+	isFailed     atomic.Bool
 }
 
 func New(serviceName, nodePath string, onFailure chan FailureForwarder) *Forwarder {
@@ -38,9 +40,7 @@ func New(serviceName, nodePath string, onFailure chan FailureForwarder) *Forward
 		DisableKeepAlives:   false,
 	}
 
-	reverseProxy := createReverseProxy(serviceName, nodePath, transport, onFailure)
-
-	return &Forwarder{
+	f := &Forwarder{
 		serviceName: serviceName,
 		socketPath:  nodePath,
 		onFailure:   onFailure,
@@ -48,15 +48,18 @@ func New(serviceName, nodePath string, onFailure chan FailureForwarder) *Forward
 			Transport: transport,
 			Timeout:   1 * time.Second,
 		},
-		reverseProxy: reverseProxy,
 	}
+
+	f.reverseProxy = createReverseProxy(serviceName, nodePath, transport, onFailure, &f.isFailed)
+
+	return f
 }
 
 func (f *Forwarder) Wait() {
 	f.wg.Wait()
 }
 
-func createReverseProxy(serviceName, nodePath string, transport http.RoundTripper, onFailure chan FailureForwarder) *httputil.ReverseProxy {
+func createReverseProxy(serviceName, nodePath string, transport http.RoundTripper, onFailure chan FailureForwarder, isFailed *atomic.Bool) *httputil.ReverseProxy {
 	target, _ := url.Parse("http://unix-socket")
 	rp := httputil.NewSingleHostReverseProxy(target)
 	rp.Transport = transport
@@ -64,7 +67,9 @@ func createReverseProxy(serviceName, nodePath string, transport http.RoundTrippe
 	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		var opErr *net.OpError
 		if errors.As(err, &opErr) {
-			onFailure <- FailureForwarder{SocketPath: nodePath, Error: opErr.Err}
+			if isFailed.CompareAndSwap(false, true) {
+				onFailure <- FailureForwarder{SocketPath: nodePath, Error: opErr.Err}
+			}
 		}
 		http.Error(w, "Node Failure", http.StatusBadGateway)
 	}
@@ -90,6 +95,11 @@ func createReverseProxy(serviceName, nodePath string, transport http.RoundTrippe
 }
 
 func (f *Forwarder) ForwardMiddleware(w *builtinsmware.ResponseWriter, r *http.Request, path string) bool {
+	if f.isFailed.Load() {
+		w.Reply("Service Unavailable", http.StatusServiceUnavailable)
+		return false
+	}
+
 	f.wg.Add(1)
 	defer f.wg.Done()
 
@@ -116,7 +126,9 @@ func (f *Forwarder) ForwardMiddleware(w *builtinsmware.ResponseWriter, r *http.R
 	if err != nil {
 		var opErr *net.OpError
 		if errors.As(err, &opErr) {
-			f.onFailure <- FailureForwarder{SocketPath: f.socketPath, Error: opErr.Err}
+			if f.isFailed.CompareAndSwap(false, true) {
+				f.onFailure <- FailureForwarder{SocketPath: f.socketPath, Error: opErr.Err}
+			}
 		}
 		w.Reply("Middleware Error", http.StatusInternalServerError)
 		return false
@@ -140,8 +152,27 @@ func (f *Forwarder) ForwardMiddleware(w *builtinsmware.ResponseWriter, r *http.R
 }
 
 func (f *Forwarder) Forward(w http.ResponseWriter, r *http.Request) {
+	if f.isFailed.Load() {
+		http.Error(w, "Service Unavailable (Node Failed)", http.StatusServiceUnavailable)
+		return
+	}
 	f.wg.Add(1)
 	defer f.wg.Done()
 
 	f.reverseProxy.ServeHTTP(w, r)
+}
+
+func (f *Forwarder) TryReconnect() error {
+	conn, err := net.DialTimeout("unix", f.socketPath, 1*time.Second)
+	if err != nil {
+		return err
+	}
+	conn.Close()
+
+	if t, ok := f.client.Transport.(*http.Transport); ok {
+		t.CloseIdleConnections()
+	}
+
+	f.isFailed.Store(false)
+	return nil
 }
