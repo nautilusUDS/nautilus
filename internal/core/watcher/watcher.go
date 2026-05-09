@@ -122,32 +122,44 @@ func (w *Watcher) listenEvents(ctx context.Context) {
 }
 
 func (w *Watcher) runWorkerLoop(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Second)
-	var tickerChan <-chan time.Time
+	const retryInterval = 5 * time.Second
+	const ticksPerFullScan = 6 // 5s * 6 = 30s
+
+	ticker := time.NewTicker(retryInterval)
+	defer ticker.Stop()
+
+	tickCount := 0
 
 	for {
 		select {
 		case <-ctx.Done():
-			if ticker != nil {
-				ticker.Stop()
-			}
 			return
+
 		case <-w.eventSignal:
 			w.dirtyMu.Lock()
-			toScan := make(map[string]struct{})
+			toScan := make([]string, 0, len(w.dirtyServices))
 			for svc := range w.dirtyServices {
-				toScan[svc] = struct{}{}
+				toScan = append(toScan, svc)
 			}
 			w.dirtyServices = make(map[string]struct{})
 			w.dirtyMu.Unlock()
 
-			for svcName := range toScan {
+			for _, svcName := range toScan {
 				w.registry.Scan(svcName)
-				logs.Out.Info("Targeted scan completed", zap.String("service", svcName))
+				logs.Out.Debug("Targeted scan completed", zap.String("service", svcName))
 			}
-		case <-tickerChan:
-			if err := w.registry.Scan(""); err != nil {
-				logs.Out.Error("error scanning registry", zap.Error(err))
+
+		case <-ticker.C:
+			tickCount++
+			if tickCount >= ticksPerFullScan {
+				if err := w.registry.Scan(""); err != nil {
+					logs.Out.Error("Full registry scan failed", zap.Error(err))
+				} else {
+					logs.Out.Debug("Scheduled full scan completed")
+				}
+				tickCount = 0
+			} else {
+				w.registry.RetryUnhealthy()
 			}
 		}
 	}
