@@ -12,8 +12,8 @@ chmod 1777 "$NAUTILUS_SERVICES_DIR"
 chmod 0755 "$NAUTILUS_ENTRYPOINT_DIR"
 
 if command -v setfacl >/dev/null 2>&1; then
-    setfacl -d -m u:nautilus:rw "$NAUTILUS_SERVICES_DIR"
-    setfacl -m u:nautilus:rw "$NAUTILUS_SERVICES_DIR"
+    setfacl -R -d -m u:nautilus:rwx "$NAUTILUS_SERVICES_DIR"
+    setfacl -R -m u:nautilus:rwx "$NAUTILUS_SERVICES_DIR"
 fi
 
 echo "[Entrypoint] Permissions initialized. Dropping privileges to 'nautilus' user..."
