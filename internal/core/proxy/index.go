@@ -32,24 +32,16 @@ const (
 // responseState wraps http.ResponseWriter to track activity, status code, and response size.
 type responseState struct {
 	http.ResponseWriter
-	wroteHeader bool
-	status      int
-	size        int64
+	status int
+	size   int64
 }
 
 func (rs *responseState) WriteHeader(code int) {
-	if rs.wroteHeader {
-		return
-	}
-	rs.wroteHeader = true
 	rs.status = code
 	rs.ResponseWriter.WriteHeader(code)
 }
 
 func (rs *responseState) Write(b []byte) (int, error) {
-	if !rs.wroteHeader {
-		rs.WriteHeader(http.StatusOK)
-	}
 	n, err := rs.ResponseWriter.Write(b)
 	rs.size += int64(n)
 	return n, err
@@ -235,7 +227,6 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// 3. Middleware Execution
 	for _, mwExpr := range resolvedMiddlewares {
-		isHandled := false
 
 		if strings.HasPrefix(mwExpr, "$") {
 			// Internal built-in middleware logic
@@ -246,7 +237,6 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					resp.WriteTo(trackedWriter)
 					return
 				}
-				isHandled = true
 			} else {
 				logs.Out.Error("Failed To Resolve Built-in Middleware", zap.String("expr", mwExpr))
 				http.Error(trackedWriter, ErrInternal, http.StatusInternalServerError)
@@ -275,13 +265,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				resp.WriteTo(trackedWriter)
 				return
 			}
-			isHandled = true
 		}
 
-		// If a middleware has already sent a response, terminate the chain
-		if isHandled && trackedWriter.wroteHeader {
-			return
-		}
 	}
 
 	finalServiceName = rawServiceName
