@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"nautilus/internal/core/builtins"
@@ -45,6 +46,19 @@ func (rs *responseState) Write(b []byte) (int, error) {
 	n, err := rs.ResponseWriter.Write(b)
 	rs.size += int64(n)
 	return n, err
+}
+
+func (rs *responseState) Flush() {
+	if f, ok := rs.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (rs *responseState) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := rs.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, fmt.Errorf("underlying ResponseWriter does not support hijacking")
 }
 
 type Manager struct {
