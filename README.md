@@ -96,24 +96,22 @@ Nautilus can be deployed using Docker and Docker Compose. This is the recommende
 
 Nautilus uses a strict permission model for Unix Domain Sockets (UDS) to ensure security and service isolation while maintaining high-performance communication.
 
-### Directory Structure & Permissions
+### Directory Structure
 
-| Directory | Permission | Purpose |
-| :--- | :--- | :--- |
-| `/var/run/nautilus/services` | `1777` (Sticky Bit) | Where backend services place their `.sock` files. |
-| `/var/run/nautilus/entrypoints` | `0755` | Where Nautilus creates its entrypoint sockets. |
+| Directory | Purpose |
+| :--- | :--- |
+| `/var/run/nautilus/services` | Where backend services place their `.sock` files. |
+| `/var/run/nautilus/entrypoints` | Where Nautilus creates its entrypoint sockets. |
 
 ### Security Model
 
-1.  **Isolation (Sticky Bit)**: The `services` directory has the **Sticky Bit** set (`1777`). This allows any backend service to create its own socket but prevents services from deleting or renaming sockets owned by others.
-2.  **Access Control (ACL)**: In production (Docker), Nautilus uses **POSIX ACLs** (Access Control Lists) to automatically grant the `nautilus` user read/write access to any socket created in the `services` directory, even if the socket's owner restricts access to other users.
-3.  **Privilege Dropping**: The Nautilus Docker image starts as `root` to initialize these permissions and then immediately drops privileges to a non-root `nautilus` user for execution.
+1.  **Privilege Dropping**: The Nautilus Docker image starts as `root` to initialize the environment and then immediately drops privileges to a non-root `nautilus` user for execution.
+2.  **Automated Environment Management**: Nautilus automatically configures directory isolation and access controls to ensure secure communication between services.
 
 ### Backend Implementation Advice
 
-To maintain a secure environment, backend services should:
--   **Recommended Permissions**: Set your socket permissions to `0700` (owner only) or `0770` (owner and group). 
--   **Rely on ACLs**: Do **not** use `0666`. The Default ACL on the `services` directory will automatically grant the `nautilus` user the necessary permissions.
+To ensure stable communication, backend services should:
+-   **Recommended Permissions**: Set your socket permissions to `0666`. While Nautilus attempts to manage permissions via ACLs, they can be unreliable for socket files in certain environments; `0666` remains the safest default.
 -   **Run as Non-Root**: Ensure backend services run as a dedicated user (not `root`) within their own containers.
 
 ## License

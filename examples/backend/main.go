@@ -23,7 +23,7 @@ func main() {
 	}
 
 	socketDir := filepath.Join(servicesDir, serviceName)
-	if err := os.MkdirAll(socketDir, 0700); err != nil {
+	if err := os.MkdirAll(socketDir, 0755); err != nil {
 		log.Fatalf("Failed to create socket directory: %v", err)
 	}
 
@@ -40,9 +40,9 @@ func main() {
 	}
 	defer os.Remove(socketPath)
 
-	// Ensure permissions for core to access via ACL
-	// We use 0700 here; the directory's Default ACL will handle Nautilus access.
-	os.Chmod(socketPath, 0700)
+	// Ensure permissions for core to access
+	// We use 0666 here as a safe default because ACLs can be unreliable on some systems.
+	os.Chmod(socketPath, 0666)
 
 	log.Printf("Service %s listening on %s", serviceName, socketPath)
 
