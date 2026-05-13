@@ -25,18 +25,25 @@ type Registry struct {
 	UpstreamDuration *prometheus.HistogramVec
 
 	// Detailed traffic analysis
-	HTTPRequestsTotal *prometheus.CounterVec
+	HTTPRequestsTotal  *prometheus.CounterVec
 	RequestBytesTotal  *prometheus.CounterVec
 	ResponseBytesTotal *prometheus.CounterVec
 
 	// Service registration and health
-	ServiceNodesActive    *prometheus.GaugeVec
-	NodeFailuresTotal     *prometheus.CounterVec
-	RegistryScanDuration  prometheus.Histogram
+	ServiceNodesActive   *prometheus.GaugeVec
+	NodeFailuresTotal    *prometheus.CounterVec
+	RegistryScanDuration prometheus.Histogram
 
 	// System and configuration
 	ConfigReloadDuration prometheus.Histogram
 	ConfigErrorsTotal    *prometheus.CounterVec
+
+	// Tentacle metrics (Remote push)
+	TentacleActiveConnections       *prometheus.GaugeVec
+	TentacleConnectionAttemptsTotal *prometheus.CounterVec
+	TentacleConnectionFailuresTotal *prometheus.CounterVec
+	TentacleBytesTransmittedTotal   *prometheus.CounterVec
+	TentacleTransportLatency        *prometheus.HistogramVec
 }
 
 var (
@@ -132,6 +139,32 @@ func NewRegistry() *Registry {
 			Name: "nautilus_config_errors_total",
 			Help: "Total number of configuration errors",
 		}, []string{"type"}),
+
+		TentacleActiveConnections: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "tentacle_active_connections",
+			Help: "Current active TCP backend connections.",
+		}, []string{"tentacle_id", "service"}),
+
+		TentacleConnectionAttemptsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "tentacle_connection_attempts_total",
+			Help: "Total backend connection attempts.",
+		}, []string{"tentacle_id", "service"}),
+
+		TentacleConnectionFailuresTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "tentacle_connection_failures_total",
+			Help: "Total backend connection failures.",
+		}, []string{"tentacle_id", "service"}),
+
+		TentacleBytesTransmittedTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "tentacle_bytes_transmitted_total",
+			Help: "Total bytes transferred (bidirectional).",
+		}, []string{"tentacle_id", "service"}),
+
+		TentacleTransportLatency: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "tentacle_transport_latency_seconds",
+			Help:    "UDS-to-TCP bridge transmission latency.",
+			Buckets: DefaultBuckets,
+		}, []string{"tentacle_id", "service"}),
 	}
 
 	// Register all collectors
@@ -151,6 +184,11 @@ func NewRegistry() *Registry {
 		r.RegistryScanDuration,
 		r.ConfigReloadDuration,
 		r.ConfigErrorsTotal,
+		r.TentacleActiveConnections,
+		r.TentacleConnectionAttemptsTotal,
+		r.TentacleConnectionFailuresTotal,
+		r.TentacleBytesTransmittedTotal,
+		r.TentacleTransportLatency,
 	)
 
 	// Cache the handler
