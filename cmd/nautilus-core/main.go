@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"nautilus/internal/core/configwatcher"
 	"nautilus/internal/core/logs"
+	"nautilus/internal/core/metrics"
 	"nautilus/internal/core/options"
 	"nautilus/internal/core/proxy"
 	"nautilus/internal/core/registry"
@@ -74,7 +75,7 @@ func main() {
 
 	w, err := watcher.NewWatcher(reg)
 	if err != nil {
-		logs.Out.Error("Failed to initialize watcher", zap.Error(err))
+		logs.Out.Error("Failed to initialize config watcher", zap.Error(err))
 		return
 	}
 
@@ -95,19 +96,25 @@ func main() {
 		return
 	}
 
-	hasToken := len(opts.Token) > 0
+	if err := createEntrypoints(lc, manager, opts); err != nil {
+		logs.Out.Error("Failed to create entrypoints", zap.Error(err))
+		return
+	}
 
+	lc.Wait()
+}
+
+func createEntrypoints(lc *lifecycle.LifecycleManager, manager *proxy.Manager, opts *options.Options) error {
 	fileLockCtx, fileLockCancel := context.WithTimeout(context.Background(), time.Second*1)
 	defer fileLockCancel()
-
 	fileLock := flock.New(filepath.Join(opts.EntrypointDir, "nautilus.lock"))
 	locked, err := fileLock.TryLockContext(fileLockCtx, 200*time.Millisecond)
 	if err != nil || !locked {
-		logs.Out.Error("Failed to acquire lock", zap.Error(err))
-		return
+		return fmt.Errorf("failed to acquire lock: %w", err)
 	}
 	defer fileLock.Unlock()
 
+	hasToken := len(opts.Token) > 0
 	token := "-"
 	if hasToken {
 		token = fmt.Sprintf("-%s-", opts.Token)
@@ -115,8 +122,7 @@ func main() {
 	if hasToken || opts.ForceClean {
 		err := cleanLegacySockets(opts.EntrypointDir, token, opts.ForceClean)
 		if err != nil {
-			logs.Out.Error("Failed to clean legacy sockets", zap.Error(err))
-			return
+			return fmt.Errorf("failed to clean legacy sockets: %w", err)
 		}
 	}
 
@@ -147,9 +153,6 @@ func main() {
 		}(socketPath)
 	}
 
-	fileLock.Unlock()
-	fileLockCancel()
-
 	lc.OnExit(func() {
 		logs.Out.Info("Shutting down Nautilus Core...")
 		for socketPath, cancel := range socketPathMap {
@@ -161,7 +164,7 @@ func main() {
 		}
 	})
 
-	lc.Wait()
+	return nil
 }
 
 func cleanLegacySockets(dir string, token string, force bool) error {
@@ -176,6 +179,23 @@ func cleanLegacySockets(dir string, token string, force bool) error {
 		filePath := filepath.Join(dir, entry.Name())
 		if force {
 			err := os.Remove(filePath)
+			if err != nil {
+				logs.Out.Error("Failed to remove entrypoint", zap.Error(err))
+			}
+			continue
+		}
+		if !strings.Contains(entry.Name(), token) {
+			continue
+		}
+
+		err := os.Remove(filePath)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+	err := os.Remove(filePath)
 			if err != nil {
 				logs.Out.Error("Failed to remove entrypoint", zap.Error(err))
 			}
