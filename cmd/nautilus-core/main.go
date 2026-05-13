@@ -79,8 +79,15 @@ func main() {
 		return
 	}
 
+	collector := metrics.NewCollector(filepath.Join(opts.ServicesDir, "metrics.sock"), metrics.Global)
+	if err := collector.Start(); err != nil {
+		logs.Out.Error("Failed to start metrics collector", zap.Error(err))
+		return
+	}
+
 	// 4. Register Cleanup Hook
 	lc.OnExit(func() {
+		collector.Stop()
 		w.Close()
 		cw.Close()
 	})
@@ -179,23 +186,6 @@ func cleanLegacySockets(dir string, token string, force bool) error {
 		filePath := filepath.Join(dir, entry.Name())
 		if force {
 			err := os.Remove(filePath)
-			if err != nil {
-				logs.Out.Error("Failed to remove entrypoint", zap.Error(err))
-			}
-			continue
-		}
-		if !strings.Contains(entry.Name(), token) {
-			continue
-		}
-
-		err := os.Remove(filePath)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-	err := os.Remove(filePath)
 			if err != nil {
 				logs.Out.Error("Failed to remove entrypoint", zap.Error(err))
 			}
