@@ -13,6 +13,7 @@ func main() {
 	input := flag.String("i", "Ntlfile", "Path to Ntlfile (use '-' for stdin)")
 	output := flag.String("o", "nautilus.ntl", "Output compiled route file")
 	check := flag.Bool("check", false, "")
+	print := flag.Bool("print", false, "")
 
 	flag.Parse()
 
@@ -34,6 +35,10 @@ func main() {
 	tree, err := compiler.Parse(reader)
 	if err != nil {
 		log.Fatalf("Compilation Error: %v", err)
+	}
+
+	if *print {
+		tree.PrintTree()
 	}
 
 	if *check {
