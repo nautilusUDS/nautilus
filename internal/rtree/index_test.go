@@ -163,3 +163,21 @@ func TestReverseHost(t *testing.T) {
 		assert.Equal(t, tt.expected, string(rtree.ReverseHost(tt.input)))
 	}
 }
+
+func TestPrintRouteTree(t *testing.T) {
+	nodes := []*rtree.RawNode{
+		{URL: "example.org/api/v1/user", Methods: "GET"},
+		{URL: "example.org/api/v1/post", Methods: "POST"},
+		{URL: "example.org/api/v2/config", Methods: "GET"},
+		{URL: "google.com/search", Methods: "GET"},
+		{URL: "google.com/images", Methods: "GET"},
+		{URL: "example.com/api/v1/*", Methods: "ANY"},
+		{URL: "example.com/**", Methods: "ANY"},
+		{URL: "example.com/**_list", Methods: "GET"},
+	}
+
+	tree := rtree.Build(nodes)
+	if tree != nil {
+		tree.PrintTree()
+	}
+}
