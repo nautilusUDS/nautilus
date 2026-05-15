@@ -2,6 +2,7 @@ package rtree
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"nautilus/internal/interpolate"
 	"nautilus/internal/tags"
@@ -531,4 +532,58 @@ func ReverseHost(rawURL string) []byte {
 
 	newHost := strings.Join(segments, ".")
 	return append([]byte(newHost), url[slashIdx:]...)
+}
+
+func (t *RouteTree) PrintTree() {
+	fmt.Println(".")
+	var validRoots []int
+	for i := range 256 {
+		if t.Root[i].TargetID != 0 {
+			validRoots = append(validRoots, i)
+		}
+	}
+
+	for i, charIdx := range validRoots {
+		isLast := i == len(validRoots)-1
+		t.printEdge(&t.Root[charIdx], "", isLast)
+	}
+}
+
+func (t *RouteTree) printEdge(e *Edge, prefix string, isLast bool) {
+	node := &t.NodePool[e.TargetID]
+	fragment := string(t.FragmentPool[e.Offset:e.End])
+
+	connector := "├── "
+	if isLast {
+		connector = "└── "
+	}
+
+	info := ""
+	if node.Methods != 0 {
+		if node.Methods == MethodAny {
+			info = "\t---ANY"
+		} else {
+			methods := make([]string, 0)
+			for i, method := range HTTPMethodMap {
+				if node.Methods&method != 0 {
+					methods = append(methods, i)
+				}
+			}
+			info = fmt.Sprintf("\t---%s", strings.Join(methods, ","))
+		}
+	}
+	fmt.Printf("%s%s%s%s\n", prefix, connector, fragment, info)
+
+	newPrefix := prefix
+	if isLast {
+		newPrefix += "    "
+	} else {
+		newPrefix += "│   "
+	}
+
+	numEdges := len(node.Edges)
+	for i := range numEdges {
+		childIsLast := i == numEdges-1
+		t.printEdge(&node.Edges[i], newPrefix, childIsLast)
+	}
 }
