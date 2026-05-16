@@ -27,6 +27,11 @@ const (
 	MethodAny uint16 = 0xFFF
 )
 
+const (
+	WildcardGreedy byte = 0x01
+	Wildcard       byte = 0x02
+)
+
 // HTTPMethodMap maps standard HTTP method strings to internal bitmasks.
 var HTTPMethodMap = map[string]uint16{
 	http.MethodGet:     MethodGet,
@@ -87,7 +92,6 @@ func (t *RouteTree) Search(url []byte) (*RouteNode, bool) {
 		return nil, false
 	}
 
-	// Pre-allocate stack for backtracking to handle wildcards '*'
 	stackPtr := stackPool.Get().(*[]backtrackState)
 	stack := (*stackPtr)[:0]
 	defer func() {
@@ -97,21 +101,30 @@ func (t *RouteTree) Search(url []byte) (*RouteNode, bool) {
 
 	urlIdx := 0
 	urlLen := len(url)
-
 	lastWasWildcard := false
 
 	firstChar := url[0]
 	var currentEdge *Edge
 
-	// Initial root selection
 	switch {
 	case t.Root[firstChar].TargetID != 0:
 		currentEdge = &t.Root[firstChar]
-		if firstChar != '*' && t.Root['*'].TargetID != 0 {
-			stack = append(stack, backtrackState{edge: &t.Root['*'], urlIdx: 0, lastWasWildcard: false})
+		if t.Root[Wildcard].TargetID != 0 {
+			stack = append(stack, backtrackState{edge: &t.Root[Wildcard], urlIdx: 0, lastWasWildcard: false})
 		}
-	case t.Root['*'].TargetID != 0:
-		currentEdge = &t.Root['*']
+		if t.Root[WildcardGreedy].TargetID != 0 {
+			stack = append(stack, backtrackState{edge: &t.Root[WildcardGreedy], urlIdx: 0, lastWasWildcard: false})
+		}
+
+	case t.Root[Wildcard].TargetID != 0:
+		currentEdge = &t.Root[Wildcard]
+		if t.Root[WildcardGreedy].TargetID != 0 {
+			stack = append(stack, backtrackState{edge: &t.Root[WildcardGreedy], urlIdx: 0, lastWasWildcard: false})
+		}
+
+	case t.Root[WildcardGreedy].TargetID != 0:
+		currentEdge = &t.Root[WildcardGreedy]
+
 	default:
 		return nil, false
 	}
@@ -122,20 +135,29 @@ func (t *RouteTree) Search(url []byte) (*RouteNode, bool) {
 		fLen := int(fEnd - fStart)
 		matched := false
 
-		// Handle Wildcard Fragment
-		if t.FragmentPool[fStart] == '*' {
+		firstFragChar := t.FragmentPool[fStart]
+
+		switch firstFragChar {
+		case Wildcard, WildcardGreedy:
 			if len(node.Edges) == 0 {
 				if node.Methods != 0 {
-					return node, true
+					if firstFragChar == Wildcard {
+						if bytes.IndexByte(url[urlIdx:], '/') == -1 {
+							return node, true
+						}
+					} else {
+						return node, true
+					}
 				}
 			} else {
 				for i := range node.Edges {
 					e := &node.Edges[i]
 					targetFrag := t.FragmentPool[e.Offset:e.End]
 
-					if targetFrag[0] == '*' {
+					switch targetFrag[0] {
+					case Wildcard, WildcardGreedy:
 						stack = append(stack, backtrackState{edge: e, urlIdx: urlIdx, lastWasWildcard: true})
-					} else {
+					default:
 						searchSpace := url[urlIdx:]
 						searchStart := 0
 						for {
@@ -146,7 +168,7 @@ func (t *RouteTree) Search(url []byte) (*RouteNode, bool) {
 							foundIdx := searchStart + idx
 							consumed := searchSpace[:foundIdx]
 
-							if lastWasWildcard || bytes.IndexByte(consumed, '/') == -1 {
+							if firstFragChar == WildcardGreedy || lastWasWildcard || bytes.IndexByte(consumed, '/') == -1 {
 								stack = append(stack, backtrackState{
 									edge:            e,
 									urlIdx:          urlIdx + foundIdx,
@@ -158,9 +180,8 @@ func (t *RouteTree) Search(url []byte) (*RouteNode, bool) {
 					}
 				}
 			}
-		} else {
 
-			// Handle Static Fragment matching
+		default:
 			if urlIdx+fLen <= urlLen && bytes.Equal(url[urlIdx:urlIdx+fLen], t.FragmentPool[fStart:fEnd]) {
 				urlIdx += fLen
 
@@ -169,24 +190,28 @@ func (t *RouteTree) Search(url []byte) (*RouteNode, bool) {
 						return node, true
 					}
 				} else {
-
 					nextChar := url[urlIdx]
 					var exactMatch *Edge
 					var wildcardMatch *Edge
+					var greedyMatch *Edge
 
-					for i := range node.Edges {
-						e := &node.Edges[i]
+					for j := range node.Edges {
+						e := &node.Edges[j]
 						switch t.FragmentPool[e.Offset] {
 						case nextChar:
 							exactMatch = e
-						case '*':
+						case Wildcard:
 							wildcardMatch = e
+						case WildcardGreedy:
+							greedyMatch = e
 						}
 					}
 
 					switch {
 					case exactMatch != nil:
-
+						if greedyMatch != nil {
+							stack = append(stack, backtrackState{edge: greedyMatch, urlIdx: urlIdx, lastWasWildcard: false})
+						}
 						if wildcardMatch != nil {
 							stack = append(stack, backtrackState{edge: wildcardMatch, urlIdx: urlIdx, lastWasWildcard: false})
 						}
@@ -195,15 +220,20 @@ func (t *RouteTree) Search(url []byte) (*RouteNode, bool) {
 						matched = true
 
 					case wildcardMatch != nil:
+						if greedyMatch != nil {
+							stack = append(stack, backtrackState{edge: greedyMatch, urlIdx: urlIdx, lastWasWildcard: false})
+						}
 						currentEdge = wildcardMatch
 						lastWasWildcard = false
 						matched = true
+
+					case greedyMatch != nil:
+						currentEdge = greedyMatch
+						lastWasWildcard = false
+						matched = true
 					}
-
 				}
-
 			}
-
 		}
 
 		if !matched {
@@ -217,7 +247,6 @@ func (t *RouteTree) Search(url []byte) (*RouteNode, bool) {
 			}
 			break
 		}
-
 	}
 
 	return nil, false
@@ -246,10 +275,12 @@ func Build(rawNodes []*RawNode) *RouteTree {
 	}
 
 	actionMap := make(map[string]uint32)
-	wildcardReg := regexp.MustCompile(`\*{3,}`)
+	wildcardReg := regexp.MustCompile(`\*{2,}`)
 
 	for _, raw := range rawNodes {
-		url := ReverseHost(wildcardReg.ReplaceAllString(raw.URL, "**"))
+		url := wildcardReg.ReplaceAll([]byte(raw.URL), []byte{WildcardGreedy})
+		url = bytes.ReplaceAll(url, []byte("*"), []byte{Wildcard})
+		url = ReverseHost(url)
 		methodMask := parseMethods(raw.Methods)
 		tagMask := tags.Analyze(raw.Tags)
 
@@ -402,42 +433,52 @@ func (t *RouteTree) compressEdge(e *Edge) (*Edge, int, bool) {
 		return nil, 0, false
 	}
 
+	isWildcard := e.Fragment[0] == Wildcard || e.Fragment[0] == WildcardGreedy
 	switch len(e.Node.Edges) {
 	case 0:
-		if e.Fragment[0] != '*' {
-			return e, 1, true
+		if isWildcard {
+			return e, 1, false
 		}
+		return e, 1, true
 	case 1:
 		child, l, ok := t.compressEdge(&e.Node.Edges[0])
-		if ok && e.Fragment[0] != '*' && e.Node.Methods == 0 {
+		if isWildcard {
+			return e, (l + 1), false
+		}
+		if ok && e.Node.Methods == 0 {
 			e.Fragment = append(e.Fragment, child.Fragment...)
 			e.Node = child.Node
-			return e, (l + 1), true
-		} else {
-			return nil, (l + 1), false
 		}
+		return e, (l + 1), true
 	default:
 		l := t.compressNode(e.Node)
-		return nil, (l + 1), false
+		return e, (l + 1), true
 	}
-	return nil, 1, false
 }
 
 func (t *RouteTree) compressNode(n *RouteNode) int {
 	total := 0
-	wildcardIdx := -1
 	for i := range n.Edges {
 		_, l, _ := t.compressEdge(&n.Edges[i])
 		total += l
-		if n.Edges[i].Fragment[0] == '*' {
-			wildcardIdx = i
-		}
 	}
 	// Ensure wildcard is always the last edge for searching priority
-	if wildcardIdx > -1 {
-		last := len(n.Edges) - 1
-		n.Edges[wildcardIdx], n.Edges[last] = n.Edges[last], n.Edges[wildcardIdx]
-	}
+	slices.SortFunc(n.Edges, func(a, b Edge) int {
+		typeOf := func(f []byte) int {
+			if len(f) == 0 {
+				return 0
+			}
+			switch f[0] {
+			case WildcardGreedy:
+				return 2
+			case Wildcard:
+				return 1
+			default:
+				return 0
+			}
+		}
+		return typeOf(a.Fragment) - typeOf(b.Fragment)
+	})
 	return total
 }
 
@@ -516,8 +557,7 @@ func matchMethodToken(m string) uint16 {
 }
 
 // ReverseHost reverses the host part of the URL for better indexing (e.g., com.google.www)
-func ReverseHost(rawURL string) []byte {
-	url := []byte(rawURL)
+func ReverseHost(url []byte) []byte {
 	slashIdx := slices.Index(url, '/')
 	if slashIdx == -1 {
 		slashIdx = len(url)
@@ -551,7 +591,9 @@ func (t *RouteTree) PrintTree() {
 
 func (t *RouteTree) printEdge(e *Edge, prefix string, isLast bool) {
 	node := &t.NodePool[e.TargetID]
-	fragment := string(t.FragmentPool[e.Offset:e.End])
+	fragmentBytes := bytes.ReplaceAll(t.FragmentPool[e.Offset:e.End], []byte{Wildcard}, []byte{'*'})
+	fragmentBytes = bytes.ReplaceAll(fragmentBytes, []byte{WildcardGreedy}, []byte{'*', '*'})
+	fragment := string(fragmentBytes)
 
 	connector := "├── "
 	if isLast {

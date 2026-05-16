@@ -184,7 +184,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 1. Route Lookup
 	lookupPath := host + r.URL.Path
-	node, exists := tree.Search(rtree.ReverseHost(lookupPath))
+	node, exists := tree.Search(rtree.ReverseHost([]byte(lookupPath)))
 	if !exists {
 		routePattern = "404"
 		http.Error(trackedWriter, "Resource Not Found", http.StatusNotFound)

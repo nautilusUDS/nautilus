@@ -20,7 +20,7 @@ func TestFullWildcardHost(t *testing.T) {
 	tree := rtree.Build(rawNodes)
 	require.NotNil(t, tree)
 
-	url := "example.com/api/test"
+	url := []byte("example.com/api/test")
 	urlBytes := rtree.ReverseHost(url)
 	node, exists := tree.Search(urlBytes)
 
@@ -31,7 +31,7 @@ func TestFullWildcardHost(t *testing.T) {
 		assert.Equal(t, "all-hosts-service", tree.GetActionName(serviceID))
 	}
 
-	url2 := "other.io/api/test"
+	url2 := []byte("other.io/api/test")
 	urlBytes2 := rtree.ReverseHost(url2)
 	node2, exists2 := tree.Search(urlBytes2)
 

@@ -93,7 +93,7 @@ func TestRouteTree_Search(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			urlBytes := rtree.ReverseHost(tt.url)
+			urlBytes := rtree.ReverseHost([]byte(tt.url))
 			node, exists := tree.Search(urlBytes)
 
 			if !tt.expectedExists {
@@ -125,7 +125,7 @@ func TestRouteTree_Compression(t *testing.T) {
 
 	tree := rtree.Build(rawNodes)
 
-	url := "nautilus.io/api/v1"
+	url := []byte("nautilus.io/api/v1")
 	urlBytes := rtree.ReverseHost(url)
 
 	node, exists := tree.Search(urlBytes)
@@ -160,7 +160,7 @@ func TestReverseHost(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		assert.Equal(t, tt.expected, string(rtree.ReverseHost(tt.input)))
+		assert.Equal(t, tt.expected, string(rtree.ReverseHost([]byte(tt.input))))
 	}
 }
 

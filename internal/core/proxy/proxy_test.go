@@ -117,7 +117,7 @@ func TestManager_LoadBalancing(t *testing.T) {
 	// Verify that GetForwarder cycles through nodes.
 	f1, err := reg.GetForwarder("lb-service")
 	require.NoError(t, err)
-	
+
 	f2, err := reg.GetForwarder("lb-service")
 	require.NoError(t, err)
 
